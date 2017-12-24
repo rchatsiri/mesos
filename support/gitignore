@@ -37,3 +37,7 @@ build/
 .deps/
 .libs/
 *-stamp
+
+# Support python not use in project.
+src/cli_new/.virtualenv/
+src/cli_new/.virtualenv/*

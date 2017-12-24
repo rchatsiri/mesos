@@ -25,4 +25,8 @@ Instructions are included on the [Getting Started](http://mesos.apache.org/getti
 
 Apache Mesos is licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).
 
-For additional information, see the LICENSE and NOTICE files.
+For additional information, see the LICENSE and NOTICE files
+
+# Command line.
+
+Start application by use gdb at master nodes: ``` sudo ./gdb-mesos-master.sh --work_dir=/var/lib/mesos --ip=127.0.0.1 ```.
