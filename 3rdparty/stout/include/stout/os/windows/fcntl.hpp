@@ -22,12 +22,20 @@
 #include <stout/os/socket.hpp>
 #include <stout/os/windows/fd.hpp>
 
+#define O_RDONLY _O_RDONLY
+#define O_WRONLY _O_WRONLY
+#define O_RDWR _O_RDWR
+#define O_CREAT _O_CREAT
+#define O_TRUNC _O_TRUNC
+#define O_APPEND _O_APPEND
+#define O_CLOEXEC _O_NOINHERIT
+
 namespace os {
 
 // NOTE: This is not supported on Windows.
 inline Try<Nothing> cloexec(const WindowsFD& fd)
 {
-  LOG(WARNING) << "`os::cloexec` has been called, but is a no-op on Windows";
+  VLOG(2) << "`os::cloexec` has been called, but is a no-op on Windows";
   return Nothing();
 }
 
@@ -35,16 +43,14 @@ inline Try<Nothing> cloexec(const WindowsFD& fd)
 // NOTE: This is not supported on Windows.
 inline Try<Nothing> unsetCloexec(const WindowsFD& fd)
 {
-  LOG(WARNING) << "`os::unsetCloexec` has been called, "
-               << "but is a no-op on Windows";
-
+  VLOG(2) << "`os::unsetCloexec` has been called, but is a no-op on Windows";
   return Nothing();
 }
 
 
 inline Try<bool> isCloexec(const WindowsFD& fd)
 {
-  LOG(WARNING) << "`os::isCloexec` has been called, but is a stub on Windows";
+  VLOG(2) << "`os::isCloexec` has been called, but is a stub on Windows";
   return true;
 }
 
@@ -75,7 +81,7 @@ inline Try<Nothing> nonblock(const WindowsFD& fd)
 // NOTE: This is not supported on Windows.
 inline Try<bool> isNonblock(const WindowsFD& fd)
 {
-  LOG(WARNING) << "`os::isNonblock` has been called, but is a stub on Windows";
+  VLOG(2) << "`os::isNonblock` has been called, but is a stub on Windows";
   return true;
 }
 

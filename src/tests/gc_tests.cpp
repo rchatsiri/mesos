@@ -40,6 +40,8 @@
 #include <stout/os.hpp>
 #include <stout/path.hpp>
 
+#include <stout/os/realpath.hpp>
+
 #ifdef __linux__
 #include "linux/fs.hpp"
 #endif
@@ -53,6 +55,7 @@
 #include "slave/constants.hpp"
 #include "slave/flags.hpp"
 #include "slave/gc.hpp"
+#include "slave/gc_process.hpp"
 #include "slave/paths.hpp"
 #include "slave/slave.hpp"
 
@@ -127,6 +130,13 @@ TEST_F(GarbageCollectorTest, Schedule)
   AWAIT_READY(scheduleDispatch3);
   Clock::settle();
 
+  JSON::Object metrics = Metrics();
+
+  ASSERT_EQ(1u, metrics.values.count("gc/path_removals_pending"));
+  EXPECT_SOME_EQ(
+      3u,
+      metrics.at<JSON::Number>("gc/path_removals_pending"));
+
   // Advance the clock to trigger the GC of file1 and file2.
   Clock::advance(Seconds(10));
   Clock::settle();
@@ -146,6 +156,22 @@ TEST_F(GarbageCollectorTest, Schedule)
   AWAIT_READY(schedule3);
 
   EXPECT_FALSE(os::exists(file3));
+
+  metrics = Metrics();
+
+  ASSERT_EQ(1u, metrics.values.count("gc/path_removals_pending"));
+  ASSERT_EQ(1u, metrics.values.count("gc/path_removals_succeeded"));
+  ASSERT_EQ(1u, metrics.values.count("gc/path_removals_failed"));
+
+  EXPECT_SOME_EQ(
+      0u,
+      metrics.at<JSON::Number>("gc/path_removals_pending"));
+  EXPECT_SOME_EQ(
+      3u,
+      metrics.at<JSON::Number>("gc/path_removals_succeeded"));
+  EXPECT_SOME_EQ(
+      0u,
+      metrics.at<JSON::Number>("gc/path_removals_failed"));
 
   Clock::resume();
 }
@@ -257,9 +283,11 @@ TEST_F(GarbageCollectorTest, Prune)
 class GarbageCollectorIntegrationTest : public MesosTest {};
 
 
-// This test ensures that garbage collection removes
+// This test ensures that garbage collection does not remove
 // the slave working directory after a slave restart.
-TEST_F(GarbageCollectorIntegrationTest, Restart)
+//
+// TODO(andschwa): Enable this when MESOS-7604 is fixed.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(GarbageCollectorIntegrationTest, Restart)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -347,22 +375,21 @@ TEST_F(GarbageCollectorIntegrationTest, Restart)
 
   Clock::pause();
 
-  Future<Nothing> schedule =
-    FUTURE_DISPATCH(_, &GarbageCollectorProcess::schedule);
+  Future<Nothing> __recover = FUTURE_DISPATCH(_, &Slave::__recover);
 
   slave = StartSlave(detector.get(), flags);
   ASSERT_SOME(slave);
 
-  AWAIT_READY(schedule);
-
-  Clock::settle(); // Wait for GarbageCollectorProcess::schedule to complete.
+  // Wait for the agent to finish recovery.
+  AWAIT_READY(__recover);
+  Clock::settle();
 
   Clock::advance(flags.gc_delay);
 
   Clock::settle();
 
-  // By this time the old slave directory should be cleaned up.
-  ASSERT_FALSE(os::exists(slaveDir));
+  // By this time the old slave directory should not be cleaned up.
+  ASSERT_TRUE(os::exists(slaveDir));
 
   Clock::resume();
 
@@ -555,9 +582,21 @@ TEST_F(GarbageCollectorIntegrationTest, ExitedExecutor)
 
   ASSERT_TRUE(os::exists(executorDir));
 
+  const string& latestDir = slave::paths::getExecutorLatestRunPath(
+      flags.work_dir, slaveId, frameworkId.get(), DEFAULT_EXECUTOR_ID);
+
+  process::UPID latest("files", process::address());
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
+      process::http::OK().status,
+      process::http::get(
+          latest,
+          "browse",
+          "path=" + latestDir,
+          createBasicAuthHeaders(DEFAULT_CREDENTIAL)));
+
   Clock::pause();
 
-  // Kiling the executor will cause the slave to schedule its
+  // Killing the executor will cause the slave to schedule its
   // directory to get garbage collected.
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -591,6 +630,14 @@ TEST_F(GarbageCollectorIntegrationTest, ExitedExecutor)
           files,
           "browse",
           "path=" + executorDir,
+          createBasicAuthHeaders(DEFAULT_CREDENTIAL)));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
+      process::http::NotFound().status,
+      process::http::get(
+          latest,
+          "browse",
+          "path=" + latestDir,
           createBasicAuthHeaders(DEFAULT_CREDENTIAL)));
 
   Clock::resume();
@@ -661,7 +708,7 @@ TEST_F(GarbageCollectorIntegrationTest, DiskUsage)
 
   Clock::pause();
 
-  // Kiling the executor will cause the slave to schedule its
+  // Killing the executor will cause the slave to schedule its
   // directory to get garbage collected.
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -888,7 +935,7 @@ TEST_F(GarbageCollectorIntegrationTest, ROOT_BusyMountPoint)
 
   AWAIT_READY(frameworkId);
   AWAIT_READY(offers);
-  EXPECT_FALSE(offers->empty());
+  ASSERT_FALSE(offers->empty());
 
   const Offer& offer = offers.get()[0];
   const SlaveID& slaveId = offer.slave_id();
@@ -909,9 +956,11 @@ TEST_F(GarbageCollectorIntegrationTest, ROOT_BusyMountPoint)
       "test-task123",
       "test-task123");
 
+  Future<TaskStatus> status0;
   Future<TaskStatus> status1;
   Future<TaskStatus> status2;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&status0))
     .WillOnce(FutureArg<1>(&status1))
     .WillOnce(FutureArg<1>(&status2));
 
@@ -919,6 +968,10 @@ TEST_F(GarbageCollectorIntegrationTest, ROOT_BusyMountPoint)
       _, &GarbageCollectorProcess::schedule);
 
   driver.launchTasks(offer.id(), {task});
+
+  AWAIT_READY(status0);
+  EXPECT_EQ(task.task_id(), status0->task_id());
+  EXPECT_EQ(TASK_STARTING, status0->state());
 
   AWAIT_READY(status1);
   EXPECT_EQ(task.task_id(), status1->task_id());
@@ -959,6 +1012,28 @@ TEST_F(GarbageCollectorIntegrationTest, ROOT_BusyMountPoint)
   EXPECT_TRUE(os::exists(sandbox));
   EXPECT_TRUE(os::exists(path::join(sandbox, mountPoint)));
   EXPECT_FALSE(os::exists(path::join(sandbox, regularFile)));
+
+  // Verify that GC metrics show that a path removal failed.
+  JSON::Object metrics = Metrics();
+
+  ASSERT_EQ(1u, metrics.values.count("gc/path_removals_pending"));
+  ASSERT_EQ(1u, metrics.values.count("gc/path_removals_succeeded"));
+  ASSERT_EQ(1u, metrics.values.count("gc/path_removals_failed"));
+
+  EXPECT_SOME_EQ(
+      0u,
+      metrics.at<JSON::Number>("gc/path_removals_pending"));
+  EXPECT_SOME_EQ(
+      0u,
+      metrics.at<JSON::Number>("gc/path_removals_succeeded"));
+
+  // The sandbox path removal failure will cascade to cause failures to
+  // remove the executor and framework directories. For testing purposes
+  // it is sufficient to verify that some failure was detected.
+  ASSERT_SOME(metrics.at<JSON::Number>("gc/path_removals_failed"));
+  EXPECT_GT(
+      metrics.at<JSON::Number>("gc/path_removals_failed")->as<unsigned>(),
+      0u);
 
   Clock::resume();
   driver.stop();

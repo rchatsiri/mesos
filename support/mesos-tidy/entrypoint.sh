@@ -23,6 +23,8 @@ SRCDIR=/tmp/SRC
 
 # Prepare sources
 git clone --depth 1 file:///SRC "${SRCDIR}"
+
+# We require this in order to populate the `.clang-tidy` file at the top-level.
 (cd "${SRCDIR}" && ./bootstrap)
 
 # Configure sources
@@ -31,12 +33,17 @@ cmake -DCMAKE_BUILD_TYPE=Release \
       ${CMAKE_ARGS} \
       "${SRCDIR}"
 
+# We build `stout-tests` here as a build target in order to force
+# the generation of `protobuf-tests.pb.h`. This is pretty hacky
+# for what we want to do, but it's okay for now.
+cmake --build 3rdparty/stout/tests --target stout-tests -- -j $(nproc)
+
 # Build the external dependencies.
 # TODO(mpark): Use an external dependencies target once MESOS-6924 is resolved.
 cmake --build 3rdparty --target boost-1.53.0 -- -j $(nproc)
 cmake --build 3rdparty --target elfio-3.2 -- -j $(nproc)
 cmake --build 3rdparty --target glog-0.3.3 -- -j $(nproc)
-cmake --build 3rdparty --target gmock-1.7.0 -- -j $(nproc)
+cmake --build 3rdparty --target googletest-1.8.0 -- -j $(nproc)
 cmake --build 3rdparty --target http_parser-2.6.2 -- -j $(nproc)
 
 # TODO(mpark): The `|| true` is a hack to try both `libev` and `libevent` and
@@ -48,7 +55,7 @@ cmake --build 3rdparty --target libevent-2.1.5-beta -- -j $(nproc) || true
 cmake --build 3rdparty --target leveldb-1.19 -- -j $(nproc)
 cmake --build 3rdparty --target nvml-352.79 -- -j $(nproc)
 cmake --build 3rdparty --target picojson-1.3.0 -- -j $(nproc)
-cmake --build 3rdparty --target protobuf-2.6.1 -- -j $(nproc)
+cmake --build 3rdparty --target protobuf-3.5.0 -- -j $(nproc)
 cmake --build 3rdparty --target zookeeper-3.4.8 -- -j $(nproc)
 
 # Generate the protobuf definitions.

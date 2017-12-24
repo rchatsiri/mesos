@@ -221,7 +221,7 @@ TEST_F(FaultToleranceTest, ReregisterCompletedFrameworks)
   AWAIT_READY(frameworkId);
   EXPECT_NE("", frameworkId->value());
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   // Step 3. Create/launch a task.
   TaskInfo task =
@@ -951,7 +951,7 @@ TEST_F(FaultToleranceTest, DisconnectedSchedulerLaunchLost)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   AWAIT_READY(message);
 
@@ -1014,7 +1014,7 @@ TEST_F(FaultToleranceTest, DisconnectedSchedulerLaunchDropped)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   AWAIT_READY(message);
 
@@ -1076,7 +1076,7 @@ TEST_F(FaultToleranceTest, SchedulerFailoverStatusUpdate)
   driver1.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   // Launch a task.
   TaskInfo task;
@@ -1286,7 +1286,7 @@ TEST_F(FaultToleranceTest, ForwardStatusUpdateUnknownExecutor)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
   Offer offer = offers.get()[0];
 
   TaskInfo task;
@@ -1325,7 +1325,7 @@ TEST_F(FaultToleranceTest, ForwardStatusUpdateUnknownExecutor)
       taskId,
       TASK_RUNNING,
       TaskStatus::SOURCE_SLAVE,
-      UUID::random(),
+      id::UUID::random(),
       "Dummy update");
 
   process::dispatch(
@@ -1375,7 +1375,7 @@ TEST_F(FaultToleranceTest, SchedulerFailoverExecutorToFrameworkMessage)
   driver1.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   TaskInfo task;
   task.set_name("");
@@ -1475,7 +1475,7 @@ TEST_F(FaultToleranceTest, SchedulerFailoverFrameworkToExecutorMessage)
   driver1.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched1, statusUpdate(&driver1, _))
@@ -1624,7 +1624,7 @@ TEST_F(FaultToleranceTest, IgnoreKillTaskFromUnregisteredFramework)
   // Drop the framework error message from the master to simulate
   // a partitioned framework.
   Future<FrameworkErrorMessage> frameworkErrorMessage =
-    DROP_PROTOBUF(FrameworkErrorMessage(), _ , _);
+    DROP_PROTOBUF(FrameworkErrorMessage(), _, _);
 
   driver2.start();
 
@@ -1702,7 +1702,7 @@ TEST_F(FaultToleranceTest, SchedulerExit)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   AWAIT_READY(offers);
 
@@ -1988,7 +1988,7 @@ TEST_F(FaultToleranceTest, SplitBrainMasters)
       runningStatus->task_id(),
       TASK_LOST,
       TaskStatus::SOURCE_SLAVE,
-      UUID::random()));
+      id::UUID::random()));
 
   // Spoof a message from a random master; this should be dropped by
   // the scheduler driver. Since this is delivered locally, it is
@@ -2016,6 +2016,7 @@ TEST_F(FaultToleranceTest, SplitBrainMasters)
   driver.join();
 }
 
+
 // This test verifies that when a framework re-registers with updated
 // FrameworkInfo, it gets updated in the master. The steps involved
 // are:
@@ -2039,6 +2040,9 @@ TEST_F(FaultToleranceTest, UpdateFrameworkInfoOnSchedulerFailover)
   // scheduler with updated information.
 
   FrameworkInfo finfo1 = DEFAULT_FRAMEWORK_INFO;
+  finfo1.clear_capabilities();
+  finfo1.clear_roles();
+
   finfo1.set_name("Framework 1");
   finfo1.set_failover_timeout(1000);
   finfo1.mutable_labels()->add_labels()->CopyFrom(createLabel("foo", "bar"));
@@ -2063,7 +2067,8 @@ TEST_F(FaultToleranceTest, UpdateFrameworkInfoOnSchedulerFailover)
   // updated FrameworkInfo and wait until it gets a registered
   // callback.
 
-  FrameworkInfo finfo2 = DEFAULT_FRAMEWORK_INFO;
+  FrameworkInfo finfo2 = finfo1;
+
   finfo2.mutable_id()->MergeFrom(frameworkId.get());
   auto capabilityType = FrameworkInfo::Capability::REVOCABLE_RESOURCES;
   finfo2.add_capabilities()->set_type(capabilityType);
@@ -2071,6 +2076,7 @@ TEST_F(FaultToleranceTest, UpdateFrameworkInfoOnSchedulerFailover)
   finfo2.set_webui_url("http://localhost:8080/");
   finfo2.set_failover_timeout(100);
   finfo2.set_hostname("myHostname");
+  finfo2.clear_labels();
   finfo2.mutable_labels()->add_labels()->CopyFrom(createLabel("baz", "qux"));
 
   MockScheduler sched2;
@@ -2198,14 +2204,20 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(
 
   TaskInfo task = createTask(offer, "sleep 60");
 
+  Future<TaskStatus> startingStatus;
   Future<TaskStatus> runningStatus;
   EXPECT_CALL(sched1, statusUpdate(&driver1, _))
+    .WillOnce(FutureArg<1>(&startingStatus))
     .WillOnce(FutureArg<1>(&runningStatus));
 
   Future<Nothing> statusUpdateAck = FUTURE_DISPATCH(
       slave.get()->pid, &Slave::_statusUpdateAcknowledgement);
 
   driver1.launchTasks(offer.id(), {task});
+
+  AWAIT_READY(startingStatus);
+  EXPECT_EQ(TASK_STARTING, startingStatus->state());
+  EXPECT_EQ(task.task_id(), startingStatus->task_id());
 
   AWAIT_READY(runningStatus);
   EXPECT_EQ(TASK_RUNNING, runningStatus->state());

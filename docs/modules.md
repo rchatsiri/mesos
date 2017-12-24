@@ -84,11 +84,11 @@ NOTE: Only one of `--modules` or `--modules_dir` flag can be used at time.
               "name": "foo",
               "modules": [
                 {
-                  "name": "org_apache_mesos_bar"
+                  "name": "org_apache_mesos_bar",
                   "parameters": [
                     {
                       "key": "X",
-                      "value": "Y",
+                      "value": "Y"
                     }
                   ]
                 },
@@ -319,8 +319,8 @@ mesos::modules::Module<TestModule> org_apache_mesos_TestModule(
 ### Testing a module
 
 Apart from testing the module by hand with explicit use of --modules flag, one
-can run the entire mesos test suite with the given module. For example, the
-following command will run the mesos test suite with the
+can run the entire Mesos test suite with the given module. For example, the
+following command will run the Mesos test suite with the
 `org_apache_mesos_TestCpuIsolator` module selected for isolation:
 
     ./bin/mesos-tests.sh --modules="/home/kapil/mesos/isolator-module/modules.json" --isolation="org_apache_mesos_TestCpuIsolator"

@@ -39,6 +39,7 @@
 #include <process/owned.hpp>
 #include <process/reap.hpp>
 
+#include <stout/exit.hpp>
 #include <stout/gtest.hpp>
 #include <stout/hashmap.hpp>
 #include <stout/numify.hpp>
@@ -486,12 +487,8 @@ TEST_F(CgroupsAnyHierarchyTest, ROOT_CGROUPS_Write)
     // In child process, wait for kill signal.
     while (true) { sleep(1); }
 
-    // Should not reach here.
-    const char* message = "Error, child should be killed before reaching here";
-    while (write(STDERR_FILENO, message, strlen(message)) == -1 &&
-           errno == EINTR);
-
-    _exit(EXIT_FAILURE);
+    SAFE_EXIT(
+        EXIT_FAILURE, "Error, child should be killed before reaching here");
   }
 
   // In parent process.
@@ -583,7 +580,7 @@ TEST_F(CgroupsAnyHierarchyWithCpuMemoryTest, ROOT_CGROUPS_Listen)
     << "enabled, but feel free to disable this test.\n"
     << "-------------------------------------------------------------";
 
-  const Bytes limit =  Megabytes(64);
+  const Bytes limit = Megabytes(64);
 
   ASSERT_SOME(cgroups::memory::limit_in_bytes(
       hierarchy, TEST_CGROUPS_ROOT, limit));
@@ -844,7 +841,7 @@ TEST_F(CgroupsAnyHierarchyWithFreezerTest, ROOT_CGROUPS_AssignThreads)
   Try<set<pid_t>> cgroupThreads =
     cgroups::threads(hierarchy, TEST_CGROUPS_ROOT);
   EXPECT_SOME(cgroupThreads);
-  EXPECT_EQ(0u, cgroupThreads->size());
+  EXPECT_TRUE(cgroupThreads->empty());
 
   // Assign ourselves to the test cgroup.
   ASSERT_SOME(cgroups::assign(hierarchy, TEST_CGROUPS_ROOT, ::getpid()));
@@ -1257,6 +1254,7 @@ TEST_F(CgroupsAnyHierarchyMemoryPressureTest, ROOT_IncreasePageCache)
 
   EXPECT_LT(0u, low);
 }
+
 
 // Tests the cpuacct::stat API. This test just tests for ANY value returned by
 // the API.

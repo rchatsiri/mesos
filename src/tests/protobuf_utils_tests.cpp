@@ -21,6 +21,7 @@
 #include <vector>
 
 #include <mesos/mesos.hpp>
+#include <mesos/type_utils.hpp>
 
 #include "common/protobuf_utils.hpp"
 
@@ -29,6 +30,12 @@
 using std::set;
 using std::string;
 using std::vector;
+
+using google::protobuf::Map;
+
+using mesos::internal::protobuf::convertLabelsToStringMap;
+using mesos::internal::protobuf::convertStringMapToLabels;
+using mesos::internal::protobuf::createLabel;
 
 namespace mesos {
 namespace internal {
@@ -194,6 +201,34 @@ TEST(ProtobufUtilTest, InjectAndStripAllocationInfoInOfferOperation)
 }
 
 
+// This tests that helper function `convertLabelsToStringMap` can
+// correctly convert a `Labels` to a protobuf string map and helper
+// function `convertStringMapToLabels` can convert it back.
+TEST(ProtobufUtilTest, ConvertBetweenLabelsAndStringMap)
+{
+  Labels labels1;
+  labels1.add_labels()->CopyFrom(createLabel("foo", "bar"));
+
+  Try<Map<string, string>> map1 = convertLabelsToStringMap(labels1);
+  ASSERT_SOME(map1);
+  ASSERT_NE(map1->end(), map1->find("foo"));
+  EXPECT_EQ("bar", map1->at("foo"));
+
+  EXPECT_EQ(labels1, convertStringMapToLabels(map1.get()));
+
+  Labels labels2;
+  labels2.add_labels()->CopyFrom(createLabel("foo", "bar"));
+  labels2.add_labels()->CopyFrom(createLabel("foo", "baz"));
+
+  EXPECT_ERROR(convertLabelsToStringMap(labels2));
+
+  Labels labels3;
+  labels3.add_labels()->CopyFrom(createLabel("foo", None()));
+
+  EXPECT_ERROR(convertLabelsToStringMap(labels3));
+}
+
+
 // This tests that Capabilities are correctly constructed
 // from given FrameworkInfo Capabilities.
 TEST(ProtobufUtilTest, FrameworkCapabilities)
@@ -219,6 +254,9 @@ TEST(ProtobufUtilTest, FrameworkCapabilities)
     }
     if (capabilities.multiRole) {
       result.insert(FrameworkInfo::Capability::MULTI_ROLE);
+    }
+    if (capabilities.regionAware) {
+      result.insert(FrameworkInfo::Capability::REGION_AWARE);
     }
 
     return result;
@@ -266,6 +304,9 @@ TEST(ProtobufUtilTest, FrameworkCapabilities)
 
   expected = { FrameworkInfo::Capability::MULTI_ROLE };
   EXPECT_EQ(expected, backAndForth(expected));
+
+  expected = { FrameworkInfo::Capability::REGION_AWARE };
+  EXPECT_EQ(expected, backAndForth(expected));
 }
 
 
@@ -283,6 +324,31 @@ TEST(ProtobufUtilTest, AgentCapabilities)
       registerSlaveMessage.agent_capabilities());
 
   ASSERT_TRUE(capabilities.multiRole);
+}
+
+
+// Test large message evolve.
+// Before protobuf 3.3.0, this test would fail due to the 64MB limit
+// imposed by older version of protobuf.
+TEST(ProtobufUtilTest, LargeMessageEvolve)
+{
+  string data =
+    "Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do "
+    "eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim "
+    "ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut "
+    "aliquip ex ea commodo consequat. Duis aute irure dolor in "
+    "reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla "
+    "pariatur. Excepteur sint occaecat cupidatat non proident, sunt in "
+    "culpa qui officia deserunt mollit anim id est laborum.";
+
+  while (Bytes(data.size()) < Megabytes(70)) {
+    data.append(data);
+  }
+
+  ExecutorInfo executorInfo_;
+  executorInfo_.set_data(data);
+
+  evolve(executorInfo_);
 }
 
 } // namespace tests {

@@ -93,7 +93,9 @@ public:
                const hashmap<SlaveID, UnavailableResources>&)>&
         inverseOfferCallback,
       const Option<std::set<std::string>>&
-        fairnessExcludeResourceNames = None()) = 0;
+        fairnessExcludeResourceNames = None(),
+      bool filterGpuResources = true,
+      const Option<DomainInfo>& domain = None()) = 0;
 
   /**
    * Informs the allocator of the recovered state from the master.
@@ -123,12 +125,15 @@ public:
    *     unknown agents are added later in `addSlave()`.
    *
    * @param active Whether the framework is initially activated.
+   *
+   * @param suppressedRoles List of suppressed roles for this framework.
    */
   virtual void addFramework(
       const FrameworkID& frameworkId,
       const FrameworkInfo& frameworkInfo,
       const hashmap<SlaveID, Resources>& used,
-      bool active) = 0;
+      bool active,
+      const std::set<std::string>& suppressedRoles) = 0;
 
   /**
    * Removes a framework from the Mesos cluster. It is up to an allocator to
@@ -164,7 +169,8 @@ public:
    */
   virtual void updateFramework(
       const FrameworkID& frameworkId,
-      const FrameworkInfo& frameworkInfo) = 0;
+      const FrameworkInfo& frameworkInfo,
+      const std::set<std::string>& suppressedRoles) = 0;
 
   /**
    * Adds or re-adds an agent to the Mesos cluster. It is invoked when a
@@ -199,21 +205,31 @@ public:
   /**
    * Updates an agent.
    *
-   * Updates the latest oversubscribed resources or capabilities for an agent.
-   * TODO(vinod): Instead of just oversubscribed resources have this
-   * method take total resources. We can then reuse this method to
-   * update Agent's total resources in the future.
+   * TODO(bevers): Make `total` and `capabilities` non-optional.
    *
-   * @param oversubscribed The new oversubscribed resources estimate from
-   *     the agent. The oversubscribed resources include the total amount
-   *     of oversubscribed resources that are allocated and available.
+   * @param slaveInfo The current slave info of the agent.
+   * @param total The new total resources on the agent.
    * @param capabilities The new capabilities of the agent.
    */
   virtual void updateSlave(
       const SlaveID& slave,
-      const Option<Resources>& oversubscribed = None(),
+      const SlaveInfo& slaveInfo,
+      const Option<Resources>& total = None(),
       const Option<std::vector<SlaveInfo::Capability>>&
           capabilities = None()) = 0;
+
+  /**
+   * Add resources from a local resource provider to an agent.
+   *
+   * @param slave Id of the agent to modify.
+   * @param total The resources to add to the agent's total resources.
+   * @param used The resources to add to the resources tracked as used
+   *     for this agent.
+   */
+  virtual void addResourceProvider(
+      const SlaveID& slave,
+      const Resources& total,
+      const hashmap<FrameworkID, Resources>& used) = 0;
 
   /**
    * Activates an agent. This is invoked when an agent reregisters. Offers
@@ -269,7 +285,7 @@ public:
       const FrameworkID& frameworkId,
       const SlaveID& slaveId,
       const Resources& offeredResources,
-      const std::vector<Offer::Operation>& operations) = 0;
+      const std::vector<ResourceConversion>& conversions) = 0;
 
   /**
    * Updates available resources on an agent based on a sequence of offer
@@ -350,27 +366,23 @@ public:
    * Suppresses offers.
    *
    * Informs the allocator to stop sending offers to this framework for the
-   * specified role. If the role is not specified, we will stop sending offers
-   * to this framework for all of its roles.
-   *
-   * @param role The optional role parameter allows frameworks with multiple
-   *     roles to do fine-grained suppression.
+   * specified roles. If `roles` is an empty set, we will stop sending offers
+   * to this framework for all of the framework's subscribed roles.
    */
   virtual void suppressOffers(
       const FrameworkID& frameworkId,
-      const Option<std::string>& role) = 0;
+      const std::set<std::string>& roles) = 0;
 
   /**
-   * Revives offers to this framework for the specified role. This is
+   * Revives offers to this framework for the specified roles. This is
    * invoked by a framework when it wishes to receive filtered resources
-   * immediately or get itself out of a suppressed state.
-   *
-   * @param role The optional role parameter allows frameworks with multiple
-   *     roles to do fine-grained revival.
+   * immediately or get itself out of a suppressed state. If `roles` is
+   * an empty set, it is treated as being set to all of the framework's
+   * subscribed roles.
    */
   virtual void reviveOffers(
       const FrameworkID& frameworkId,
-      const Option<std::string>& role) = 0;
+      const std::set<std::string>& roles) = 0;
 
   /**
    * Informs the allocator to set quota for the given role.

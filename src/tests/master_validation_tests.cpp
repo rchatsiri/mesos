@@ -48,6 +48,8 @@
 #include "tests/mesos.hpp"
 #include "tests/resources_utils.hpp"
 
+#include "master/validation.hpp"
+
 #include "master/detector/standalone.hpp"
 
 using namespace mesos::internal::master::validation;
@@ -104,8 +106,9 @@ TEST_F(ResourceValidationTest, StaticReservation)
 
 TEST_F(ResourceValidationTest, DynamicReservation)
 {
-  Resource resource = Resources::parse("cpus", "8", "role").get();
-  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  Resource resource = Resources::parse("cpus", "8", "*").get();
+  resource.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role", "principal"));
 
   Option<Error> error = resource::validate(CreateResources(resource));
 
@@ -115,8 +118,9 @@ TEST_F(ResourceValidationTest, DynamicReservation)
 
 TEST_F(ResourceValidationTest, RevocableDynamicReservation)
 {
-  Resource resource = Resources::parse("cpus", "8", "role").get();
-  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  Resource resource = Resources::parse("cpus", "8", "*").get();
+  resource.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role", "principal"));
   resource.mutable_revocable();
 
   Option<Error> error = resource::validate(CreateResources(resource));
@@ -125,19 +129,6 @@ TEST_F(ResourceValidationTest, RevocableDynamicReservation)
   EXPECT_TRUE(
       strings::contains(
           error->message, "cannot be created from revocable resources"));
-}
-
-
-TEST_F(ResourceValidationTest, InvalidRoleReservationPair)
-{
-  Resource resource = Resources::parse("cpus", "8", "*").get();
-  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
-
-  Option<Error> error = resource::validate(CreateResources(resource));
-
-  ASSERT_SOME(error);
-  EXPECT_TRUE(
-      strings::contains(error->message, "cannot be dynamically reserved"));
 }
 
 
@@ -269,6 +260,69 @@ TEST_F(ResourceValidationTest, SharedPersistentVolume)
 }
 
 
+TEST_F(ResourceValidationTest, SingleResourceProvider)
+{
+  Resource r1 = Resources::parse("disk", "128", "*").get();
+  r1.mutable_provider_id()->set_value("provider1");
+
+  Resource r2 = Resources::parse("cpu", "4", "*").get();
+  r2.mutable_provider_id()->set_value("provider2");
+
+  Resource r3 = Resources::parse("mem", "256", "*").get();
+  r3.mutable_provider_id()->set_value("provider2");
+
+  Resource r4 = Resources::parse("disk", "64", "*").get();
+
+  {
+    Resources resources = r1;
+
+    EXPECT_NONE(resource::internal::validateSingleResourceProvider(resources));
+  }
+
+  {
+    Resources resources = r4;
+
+    EXPECT_NONE(resource::internal::validateSingleResourceProvider(resources));
+  }
+
+  {
+    Resources resources;
+    resources += r2;
+    resources += r3;
+
+    EXPECT_NONE(resource::internal::validateSingleResourceProvider(resources));
+  }
+
+  {
+    Resources resources;
+    resources += r1;
+    resources += r2;
+
+    Option<Error> error =
+      resource::internal::validateSingleResourceProvider(resources);
+
+    ASSERT_SOME(error);
+    EXPECT_TRUE(strings::contains(
+        error->message,
+        "The resources have multiple resource providers"));
+  }
+
+  {
+    Resources resources;
+    resources += r1;
+    resources += r4;
+
+    Option<Error> error =
+      resource::internal::validateSingleResourceProvider(resources);
+
+    ASSERT_SOME(error);
+    EXPECT_TRUE(strings::contains(
+        error->message,
+        "Some resources have a resource provider and some do not"));
+  }
+}
+
+
 class ReserveOperationValidationTest : public MesosTest {};
 
 
@@ -276,18 +330,23 @@ class ReserveOperationValidationTest : public MesosTest {};
 // doesn't match the framework's role.
 TEST_F(ReserveOperationValidationTest, MatchingRole)
 {
-  Resource resource = Resources::parse("cpus", "8", "resourceRole").get();
-  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  protobuf::slave::Capabilities capabilities;
+
+  Resource resource = Resources::parse("cpus", "8", "*").get();
+  resource.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("resourceRole", "principal"));
 
   Offer::Operation::Reserve reserve;
   reserve.mutable_resources()->CopyFrom(
-      allocatedResources(resource, resource.role()));
+      allocatedResources(resource, Resources::reservationRole(resource)));
 
   FrameworkInfo frameworkInfo;
   frameworkInfo.set_role("frameworkRole");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   Option<Error> error =
-    operation::validate(reserve, "principal", frameworkInfo);
+    operation::validate(reserve, "principal", capabilities, frameworkInfo);
 
   ASSERT_SOME(error);
   EXPECT_TRUE(
@@ -303,8 +362,11 @@ TEST_F(ReserveOperationValidationTest, MatchingRole)
   frameworkInfo.add_roles("role2");
   frameworkInfo.add_capabilities()->set_type(
       FrameworkInfo::Capability::MULTI_ROLE);
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
-  error = operation::validate(reserve, "principal", frameworkInfo);
+  error =
+    operation::validate(reserve, "principal", capabilities, frameworkInfo);
 
   // We expect an error due to the framework not having the role of the reserved
   // resource. We only check part of the error message here as internally the
@@ -321,27 +383,28 @@ TEST_F(ReserveOperationValidationTest, MatchingRole)
 // This test verifies that validation fails if reserving to the "*" role.
 TEST_F(ReserveOperationValidationTest, DisallowReservingToStar)
 {
+  protobuf::slave::Capabilities capabilities;
+
   // The role "*" matches, but is invalid since frameworks with
   // "*" role cannot reserve resources.
   Resource resource = Resources::parse("cpus", "8", "*").get();
-  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  resource.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("*", "principal"));
 
   Offer::Operation::Reserve reserve;
   reserve.add_resources()->CopyFrom(resource);
 
   FrameworkInfo frameworkInfo;
   frameworkInfo.set_role("*");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   Option<Error> error =
-    operation::validate(reserve, "principal", frameworkInfo);
+    operation::validate(reserve, "principal", capabilities, frameworkInfo);
 
   ASSERT_SOME(error);
-  EXPECT_TRUE(
-      strings::contains(
-          error->message,
-          "Invalid resources: Invalid resources: Resource 'cpus(*, "
-          "principal):8' is invalid: Invalid reservation: role \"*\" cannot be "
-          "dynamically reserved"));
+  EXPECT_TRUE(strings::contains(
+      error->message, "Invalid reservation: role \"*\" cannot be reserved"));
 
   // Now verify with a MULTI_ROLE framework.
   frameworkInfo.clear_role();
@@ -350,14 +413,12 @@ TEST_F(ReserveOperationValidationTest, DisallowReservingToStar)
   frameworkInfo.add_capabilities()->set_type(
       FrameworkInfo::Capability::MULTI_ROLE);
 
-  error = operation::validate(reserve, "principal", frameworkInfo);
+  error =
+    operation::validate(reserve, "principal", capabilities, frameworkInfo);
 
   ASSERT_SOME(error);
-  EXPECT_TRUE(
-      strings::contains(
-          error->message,
-          "Resource 'cpus(*, principal):8' is invalid: Invalid reservation: "
-          "role \"*\" cannot be dynamically reserved"));
+  EXPECT_TRUE(strings::contains(
+      error->message, "Invalid reservation: role \"*\" cannot be reserved"));
 }
 
 
@@ -365,18 +426,23 @@ TEST_F(ReserveOperationValidationTest, DisallowReservingToStar)
 // of the RESERVE operation needs to match the framework's 'principal'.
 TEST_F(ReserveOperationValidationTest, MatchingPrincipal)
 {
-  Resource resource = Resources::parse("cpus", "8", "role").get();
-  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  protobuf::slave::Capabilities capabilities;
+
+  Resource resource = Resources::parse("cpus", "8", "*").get();
+  resource.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role", "principal"));
 
   Offer::Operation::Reserve reserve;
   reserve.mutable_resources()->CopyFrom(
-      allocatedResources(resource, resource.role()));
+      allocatedResources(resource, Resources::reservationRole(resource)));
 
   FrameworkInfo frameworkInfo;
   frameworkInfo.set_role("role");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   Option<Error> error =
-    operation::validate(reserve, "principal", frameworkInfo);
+    operation::validate(reserve, "principal", capabilities, frameworkInfo);
 
   EXPECT_NONE(error) << error->message;
 }
@@ -387,25 +453,29 @@ TEST_F(ReserveOperationValidationTest, MatchingPrincipal)
 // the framework's 'principal'.
 TEST_F(ReserveOperationValidationTest, NonMatchingPrincipal)
 {
-  Resource resource = Resources::parse("cpus", "8", "role").get();
-  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal2"));
+  protobuf::slave::Capabilities capabilities;
+
+  Resource resource = Resources::parse("cpus", "8", "*").get();
+  resource.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role", "principal2"));
 
   Offer::Operation::Reserve reserve;
   reserve.add_resources()->CopyFrom(resource);
 
   FrameworkInfo frameworkInfo;
   frameworkInfo.set_role("role");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   Option<Error> error =
-    operation::validate(reserve, "principal1", frameworkInfo);
+    operation::validate(reserve, "principal1", capabilities, frameworkInfo);
 
   ASSERT_SOME(error);
-  EXPECT_TRUE(
-      strings::contains(
-          error->message,
-          "A reserve operation was attempted by authenticated principal "
-          "'principal1', which does not match a reserved resource in the "
-          "request with principal 'principal2'"));
+  EXPECT_TRUE(strings::contains(
+      error->message,
+      "A reserve operation was attempted by authenticated principal "
+      "'principal1', which does not match a reserved resource in the "
+      "request with principal 'principal2'"));
 }
 
 
@@ -413,26 +483,31 @@ TEST_F(ReserveOperationValidationTest, NonMatchingPrincipal)
 // in `ReservationInfo` is not set.
 TEST_F(ReserveOperationValidationTest, ReservationInfoMissingPrincipal)
 {
-  Resource::ReservationInfo reservationInfo;
+  protobuf::slave::Capabilities capabilities;
 
-  Resource resource = Resources::parse("cpus", "8", "role").get();
-  resource.mutable_reservation()->CopyFrom(reservationInfo);
+  Resource::ReservationInfo reservationInfo;
+  reservationInfo.set_type(Resource::ReservationInfo::DYNAMIC);
+  reservationInfo.set_role("role");
+
+  Resource resource = Resources::parse("cpus", "8", "*").get();
+  resource.add_reservations()->CopyFrom(reservationInfo);
 
   Offer::Operation::Reserve reserve;
   reserve.add_resources()->CopyFrom(resource);
 
   FrameworkInfo frameworkInfo;
   frameworkInfo.set_role("role");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   Option<Error> error =
-    operation::validate(reserve, "principal", frameworkInfo);
+    operation::validate(reserve, "principal", capabilities, frameworkInfo);
 
   ASSERT_SOME(error);
-  EXPECT_TRUE(
-      strings::contains(
-          error->message,
-          "A reserve operation was attempted by principal 'principal', but "
-          "there is a reserved resource in the request with no principal set"));
+  EXPECT_TRUE(strings::contains(
+      error->message,
+      "A reserve operation was attempted by principal 'principal', but "
+      "there is a reserved resource in the request with no principal set"));
 }
 
 
@@ -440,6 +515,8 @@ TEST_F(ReserveOperationValidationTest, ReservationInfoMissingPrincipal)
 // reserved resources specified in the RESERVE operation.
 TEST_F(ReserveOperationValidationTest, StaticReservation)
 {
+  protobuf::slave::Capabilities capabilities;
+
   Resource staticallyReserved = Resources::parse("cpus", "8", "role").get();
 
   Offer::Operation::Reserve reserve;
@@ -447,9 +524,11 @@ TEST_F(ReserveOperationValidationTest, StaticReservation)
 
   FrameworkInfo frameworkInfo;
   frameworkInfo.set_role("role");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   Option<Error> error =
-    operation::validate(reserve, "principal", frameworkInfo);
+    operation::validate(reserve, "principal", capabilities, frameworkInfo);
 
   ASSERT_SOME(error);
   EXPECT_TRUE(strings::contains(error->message, "is not dynamically reserved"));
@@ -460,8 +539,11 @@ TEST_F(ReserveOperationValidationTest, StaticReservation)
 // volumes specified in the resources of the RESERVE operation.
 TEST_F(ReserveOperationValidationTest, NoPersistentVolumes)
 {
-  Resource reserved = Resources::parse("cpus", "8", "role").get();
-  reserved.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  protobuf::slave::Capabilities capabilities;
+
+  Resource reserved = Resources::parse("cpus", "8", "*").get();
+  reserved.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role", "principal"));
 
   Resource volume = Resources::parse("disk", "128", "role").get();
   volume.mutable_disk()->CopyFrom(createDiskInfo("id1", "path1"));
@@ -469,16 +551,18 @@ TEST_F(ReserveOperationValidationTest, NoPersistentVolumes)
   Offer::Operation::Reserve reserve;
 
   reserve.mutable_resources()->CopyFrom(
-      allocatedResources(reserved, reserved.role()));
+      allocatedResources(reserved, Resources::reservationRole(reserved)));
 
   reserve.mutable_resources()->MergeFrom(
-      allocatedResources(volume, volume.role()));
+      allocatedResources(volume, Resources::reservationRole(volume)));
 
   FrameworkInfo frameworkInfo;
   frameworkInfo.set_role("role");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   Option<Error> error =
-    operation::validate(reserve, "principal", frameworkInfo);
+    operation::validate(reserve, "principal", capabilities, frameworkInfo);
 
   ASSERT_SOME(error);
   EXPECT_TRUE(strings::contains(error->message, "is not dynamically reserved"));
@@ -489,8 +573,11 @@ TEST_F(ReserveOperationValidationTest, NoPersistentVolumes)
 // for a role different from the one it was allocated to.
 TEST_F(ReserveOperationValidationTest, MismatchedAllocation)
 {
-  Resource resource = Resources::parse("cpus", "8", "role1").get();
-  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  protobuf::slave::Capabilities capabilities;
+
+  Resource resource = Resources::parse("cpus", "8", "*").get();
+  resource.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role1", "principal"));
 
   Offer::Operation::Reserve reserve;
   reserve.mutable_resources()->CopyFrom(
@@ -501,9 +588,11 @@ TEST_F(ReserveOperationValidationTest, MismatchedAllocation)
   frameworkInfo.add_roles("role2");
   frameworkInfo.add_capabilities()->set_type(
       FrameworkInfo::Capability::MULTI_ROLE);
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   Option<Error> error =
-    operation::validate(reserve, "principal", frameworkInfo);
+    operation::validate(reserve, "principal", capabilities, frameworkInfo);
 
   ASSERT_SOME(error);
   EXPECT_TRUE(
@@ -518,14 +607,18 @@ TEST_F(ReserveOperationValidationTest, MismatchedAllocation)
 // is used in the operator HTTP API.
 TEST_F(ReserveOperationValidationTest, UnexpectedAllocatedResource)
 {
-  Resource resource = Resources::parse("cpus", "8", "role").get();
-  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  protobuf::slave::Capabilities capabilities;
+
+  Resource resource = Resources::parse("cpus", "8", "*").get();
+  resource.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role", "principal"));
 
   Offer::Operation::Reserve reserve;
   reserve.mutable_resources()->CopyFrom(allocatedResources(resource, "role"));
 
   // HTTP-API style invocations do not pass a `FrameworkInfo`.
-  Option<Error> error = operation::validate(reserve, "principal", None());
+  Option<Error> error =
+    operation::validate(reserve, "principal", capabilities, None());
 
   ASSERT_SOME(error);
   EXPECT_TRUE(
@@ -539,10 +632,14 @@ TEST_F(ReserveOperationValidationTest, UnexpectedAllocatedResource)
 
 TEST_F(ReserveOperationValidationTest, MixedAllocationRoles)
 {
-  Resource resource1 = Resources::parse("cpus", "8", "role1").get();
-  resource1.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
-  Resource resource2 = Resources::parse("mem", "8", "role2").get();
-  resource2.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  protobuf::slave::Capabilities capabilities;
+
+  Resource resource1 = Resources::parse("cpus", "8", "*").get();
+  resource1.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role1", "principal"));
+  Resource resource2 = Resources::parse("mem", "8", "*").get();
+  resource2.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role2", "principal"));
 
   Offer::Operation::Reserve reserve;
   reserve.mutable_resources()->CopyFrom(
@@ -554,9 +651,11 @@ TEST_F(ReserveOperationValidationTest, MixedAllocationRoles)
   frameworkInfo.add_roles("role2");
   frameworkInfo.add_capabilities()->set_type(
       FrameworkInfo::Capability::MULTI_ROLE);
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   Option<Error> error =
-    operation::validate(reserve, "principal", frameworkInfo);
+    operation::validate(reserve, "principal", capabilities, frameworkInfo);
 
   ASSERT_SOME(error);
   EXPECT_TRUE(
@@ -568,6 +667,47 @@ TEST_F(ReserveOperationValidationTest, MixedAllocationRoles)
 }
 
 
+TEST_F(ReserveOperationValidationTest, AgentHierarchicalRoleCapability)
+{
+  Resource resource = Resources::parse("cpus", "8", "*").get();
+  resource.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("foo/bar", "principal"));
+
+  Offer::Operation::Reserve reserve;
+  reserve.mutable_resources()->CopyFrom(
+      allocatedResources(resource, Resources::reservationRole(resource)));
+
+  FrameworkInfo frameworkInfo;
+  frameworkInfo.set_role("foo/bar");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
+
+  {
+    protobuf::slave::Capabilities capabilities;
+    capabilities.hierarchicalRole = true;
+
+    Option<Error> error =
+      operation::validate(reserve, "principal", capabilities, frameworkInfo);
+
+    EXPECT_NONE(error);
+  }
+
+  {
+    protobuf::slave::Capabilities capabilities;
+    capabilities.hierarchicalRole = false;
+
+    Option<Error> error =
+      operation::validate(reserve, "principal", capabilities, frameworkInfo);
+
+    ASSERT_SOME(error);
+    EXPECT_TRUE(strings::contains(
+        error->message,
+        "with reservation for hierarchical role 'foo/bar' cannot be reserved "
+        "on an agent without HIERARCHICAL_ROLE capability"));
+  }
+}
+
+
 class UnreserveOperationValidationTest : public MesosTest {};
 
 
@@ -575,8 +715,9 @@ class UnreserveOperationValidationTest : public MesosTest {};
 // `principal`.
 TEST_F(UnreserveOperationValidationTest, WithoutACL)
 {
-  Resource resource = Resources::parse("cpus", "8", "role").get();
-  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  Resource resource = Resources::parse("cpus", "8", "*").get();
+  resource.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role", "principal"));
 
   Offer::Operation::Unreserve unreserve;
   unreserve.add_resources()->CopyFrom(resource);
@@ -591,8 +732,9 @@ TEST_F(UnreserveOperationValidationTest, WithoutACL)
 // `principal` is not set.
 TEST_F(UnreserveOperationValidationTest, FrameworkMissingPrincipal)
 {
-  Resource resource = Resources::parse("cpus", "8", "role").get();
-  resource.mutable_reservation()->CopyFrom(createReservationInfo());
+  Resource resource = Resources::parse("cpus", "8", "*").get();
+  resource.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role"));
 
   Offer::Operation::Unreserve unreserve;
   unreserve.add_resources()->CopyFrom(resource);
@@ -622,8 +764,9 @@ TEST_F(UnreserveOperationValidationTest, StaticReservation)
 // volumes specified in the resources of the UNRESERVE operation.
 TEST_F(UnreserveOperationValidationTest, NoPersistentVolumes)
 {
-  Resource reserved = Resources::parse("cpus", "8", "role").get();
-  reserved.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  Resource reserved = Resources::parse("cpus", "8", "*").get();
+  reserved.add_reservations()->CopyFrom(
+      createDynamicReservationInfo("role", "principal"));
 
   Resource volume = Resources::parse("disk", "128", "role").get();
   volume.mutable_disk()->CopyFrom(createDiskInfo("id1", "path1"));
@@ -645,13 +788,16 @@ class CreateOperationValidationTest : public MesosTest {};
 // the CREATE operation are not persistent volumes.
 TEST_F(CreateOperationValidationTest, PersistentVolumes)
 {
+  protobuf::slave::Capabilities capabilities;
+
   Resource volume = Resources::parse("disk", "128", "role1").get();
   volume.mutable_disk()->CopyFrom(createDiskInfo("id1", "path1"));
 
   Offer::Operation::Create create;
   create.add_volumes()->CopyFrom(volume);
 
-  Option<Error> error = operation::validate(create, Resources(), None());
+  Option<Error> error =
+    operation::validate(create, Resources(), None(), capabilities);
 
   EXPECT_NONE(error);
 
@@ -659,7 +805,7 @@ TEST_F(CreateOperationValidationTest, PersistentVolumes)
 
   create.add_volumes()->CopyFrom(cpus);
 
-  error = operation::validate(create, Resources(), None());
+  error = operation::validate(create, Resources(), None(), capabilities);
 
   EXPECT_SOME(error);
 }
@@ -667,26 +813,29 @@ TEST_F(CreateOperationValidationTest, PersistentVolumes)
 
 TEST_F(CreateOperationValidationTest, DuplicatedPersistenceID)
 {
+  protobuf::slave::Capabilities capabilities;
+
   Resource volume1 = Resources::parse("disk", "128", "role1").get();
   volume1.mutable_disk()->CopyFrom(createDiskInfo("id1", "path1"));
 
   Offer::Operation::Create create;
   create.add_volumes()->CopyFrom(volume1);
 
-  Option<Error> error = operation::validate(create, Resources(), None());
+  Option<Error> error =
+    operation::validate(create, Resources(), None(), capabilities);
 
   EXPECT_NONE(error);
 
   Resource volume2 = Resources::parse("disk", "64", "role1").get();
   volume2.mutable_disk()->CopyFrom(createDiskInfo("id1", "path1"));
 
-  error = operation::validate(create, volume1, None());
+  error = operation::validate(create, volume1, None(), capabilities);
 
   EXPECT_SOME(error);
 
   create.add_volumes()->CopyFrom(volume2);
 
-  error = operation::validate(create, Resources(), None());
+  error = operation::validate(create, Resources(), None(), capabilities);
 
   EXPECT_SOME(error);
 }
@@ -697,6 +846,8 @@ TEST_F(CreateOperationValidationTest, DuplicatedPersistenceID)
 // or operator performing the operation.
 TEST_F(CreateOperationValidationTest, NonMatchingPrincipal)
 {
+  protobuf::slave::Capabilities capabilities;
+
   // An operation with an incorrect principal in `DiskInfo.Persistence`.
   {
     Resource volume = Resources::parse("disk", "128", "role1").get();
@@ -707,7 +858,7 @@ TEST_F(CreateOperationValidationTest, NonMatchingPrincipal)
     create.add_volumes()->CopyFrom(volume);
 
     Option<Error> error =
-      operation::validate(create, Resources(), "other-principal");
+      operation::validate(create, Resources(), "other-principal", capabilities);
 
     EXPECT_SOME(error);
   }
@@ -720,7 +871,8 @@ TEST_F(CreateOperationValidationTest, NonMatchingPrincipal)
     Offer::Operation::Create create;
     create.add_volumes()->CopyFrom(volume);
 
-    Option<Error> error = operation::validate(create, Resources(), "principal");
+    Option<Error> error =
+      operation::validate(create, Resources(), "principal", capabilities);
 
     EXPECT_SOME(error);
   }
@@ -729,13 +881,16 @@ TEST_F(CreateOperationValidationTest, NonMatchingPrincipal)
 
 TEST_F(CreateOperationValidationTest, ReadOnlyPersistentVolume)
 {
+  protobuf::slave::Capabilities capabilities;
+
   Resource volume = Resources::parse("disk", "128", "role1").get();
   volume.mutable_disk()->CopyFrom(createDiskInfo("id1", "path1", Volume::RO));
 
   Offer::Operation::Create create;
   create.add_volumes()->CopyFrom(volume);
 
-  Option<Error> error = operation::validate(create, Resources(), None());
+  Option<Error> error =
+    operation::validate(create, Resources(), None(), capabilities);
 
   EXPECT_SOME(error);
 }
@@ -743,6 +898,8 @@ TEST_F(CreateOperationValidationTest, ReadOnlyPersistentVolume)
 
 TEST_F(CreateOperationValidationTest, SharedVolumeBasedOnCapability)
 {
+  protobuf::slave::Capabilities capabilities;
+
   Resource volume = createDiskResource(
       "128", "role1", "1", "path1", None(), true); // Shared.
   volume.mutable_allocation_info()->set_role("role1");
@@ -752,16 +909,18 @@ TEST_F(CreateOperationValidationTest, SharedVolumeBasedOnCapability)
 
   // When no FrameworkInfo is specified, validation is not dependent
   // on any framework.
-  Option<Error> error = operation::validate(create, Resources(), None());
+  Option<Error> error =
+    operation::validate(create, Resources(), None(), capabilities);
 
   EXPECT_NONE(error);
 
   // When a FrameworkInfo with no SHARED_RESOURCES capability is
   // specified, the validation should fail.
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
-  frameworkInfo.set_role("role1");
+  frameworkInfo.set_roles(0, "role1");
 
-  error = operation::validate(create, Resources(), None(), frameworkInfo);
+  error = operation::validate(
+      create, Resources(), None(), capabilities, frameworkInfo);
 
   EXPECT_SOME(error);
 
@@ -770,7 +929,8 @@ TEST_F(CreateOperationValidationTest, SharedVolumeBasedOnCapability)
   frameworkInfo.add_capabilities()->set_type(
       FrameworkInfo::Capability::SHARED_RESOURCES);
 
-  error = operation::validate(create, Resources(), None(), frameworkInfo);
+  error = operation::validate(
+      create, Resources(), None(), capabilities, frameworkInfo);
 
   EXPECT_NONE(error);
 }
@@ -780,15 +940,17 @@ TEST_F(CreateOperationValidationTest, SharedVolumeBasedOnCapability)
 // than the offered disk resource results won't succeed.
 TEST_F(CreateOperationValidationTest, InsufficientDiskResource)
 {
+  protobuf::slave::Capabilities capabilities;
+
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
-  frameworkInfo.set_role("role1");
+  frameworkInfo.set_roles(0, "role1");
 
   master::Flags masterFlags = CreateMasterFlags();
 
   ACLs acls;
   mesos::ACL::RegisterFramework* acl = acls.add_register_frameworks();
   acl->mutable_principals()->add_values(frameworkInfo.principal());
-  acl->mutable_roles()->add_values(frameworkInfo.role());
+  acl->mutable_roles()->add_values(frameworkInfo.roles(0));
 
   masterFlags.acls = acls;
   masterFlags.roles = "role1";
@@ -819,7 +981,7 @@ TEST_F(CreateOperationValidationTest, InsufficientDiskResource)
   driver.start();
 
   AWAIT_READY(offers1);
-  EXPECT_FALSE(offers1->empty());
+  ASSERT_FALSE(offers1->empty());
 
   Offer offer1 = offers1.get()[0];
 
@@ -849,7 +1011,7 @@ TEST_F(CreateOperationValidationTest, InsufficientDiskResource)
   Clock::advance(masterFlags.allocation_interval);
 
   AWAIT_READY(offers2);
-  EXPECT_FALSE(offers2->empty());
+  ASSERT_FALSE(offers2->empty());
 
   Offer offer2 = offers2.get()[0];
 
@@ -864,6 +1026,8 @@ TEST_F(CreateOperationValidationTest, InsufficientDiskResource)
 
 TEST_F(CreateOperationValidationTest, MixedAllocationRole)
 {
+  protobuf::slave::Capabilities capabilities;
+
   Resource volume1 = Resources::parse("disk", "128", "role1").get();
   volume1.mutable_disk()->CopyFrom(createDiskInfo("id1", "path1"));
   Resource volume2 = Resources::parse("disk", "256", "role2").get();
@@ -879,9 +1043,11 @@ TEST_F(CreateOperationValidationTest, MixedAllocationRole)
   frameworkInfo.add_roles("role2");
   frameworkInfo.add_capabilities()->set_type(
       FrameworkInfo::Capability::MULTI_ROLE);
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   Option<Error> error = operation::validate(
-      create, Resources(), None(), frameworkInfo);
+      create, Resources(), None(), capabilities, frameworkInfo);
 
   ASSERT_SOME(error);
   EXPECT_TRUE(
@@ -890,6 +1056,40 @@ TEST_F(CreateOperationValidationTest, MixedAllocationRole)
           "Invalid volume resources: The resources have multiple allocation"
           " roles ('role2' and 'role1') but only one allocation role is"
           " allowed"));
+}
+
+
+TEST_F(CreateOperationValidationTest, AgentHierarchicalRoleCapability)
+{
+  Resource volume = Resources::parse("disk", "128", "foo/bar").get();
+  volume.mutable_disk()->CopyFrom(createDiskInfo("id1", "path1"));
+
+  Offer::Operation::Create create;
+  create.add_volumes()->CopyFrom(volume);
+
+  {
+    protobuf::slave::Capabilities capabilities;
+    capabilities.hierarchicalRole = true;
+
+    Option<Error> error =
+      operation::validate(create, Resources(), None(), capabilities);
+
+    EXPECT_NONE(error);
+  }
+
+  {
+    protobuf::slave::Capabilities capabilities;
+    capabilities.hierarchicalRole = false;
+
+    Option<Error> error =
+      operation::validate(create, Resources(), None(), capabilities);
+
+    ASSERT_SOME(error);
+    EXPECT_TRUE(strings::contains(
+        error->message,
+        "with reservation for hierarchical role 'foo/bar' cannot be created "
+        "on an agent without HIERARCHICAL_ROLE capability"));
+  }
 }
 
 
@@ -1021,6 +1221,170 @@ TEST_F(DestroyOperationValidationTest, UnknownPersistentVolume)
 }
 
 
+TEST(OperationValidationTest, CreateVolume)
+{
+  Resource disk1 = createDiskResource(
+      "10", "*", None(), None(), createDiskSourceRaw());
+
+  Resource disk2 = createDiskResource(
+      "20", "*", None(), None(), createDiskSourceMount());
+
+  Resource disk3 = createDiskResource(
+      "30", "*", None(), None(), createDiskSourceRaw());
+
+  disk1.mutable_provider_id()->set_value("provider1");
+  disk2.mutable_provider_id()->set_value("provider2");
+
+  Offer::Operation::CreateVolume createVolume;
+  createVolume.mutable_source()->CopyFrom(disk1);
+  createVolume.set_target_type(Resource::DiskInfo::Source::MOUNT);
+
+  Option<Error> error = operation::validate(createVolume);
+  EXPECT_NONE(error);
+
+  createVolume.mutable_source()->CopyFrom(disk2);
+  createVolume.set_target_type(Resource::DiskInfo::Source::MOUNT);
+
+  error = operation::validate(createVolume);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(strings::contains(
+      error->message,
+      "'source' is not a RAW disk resource"));
+
+  createVolume.mutable_source()->CopyFrom(disk3);
+  createVolume.set_target_type(Resource::DiskInfo::Source::PATH);
+
+  error = operation::validate(createVolume);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(strings::contains(
+      error->message,
+      "Does not have a resource provider"));
+
+  createVolume.mutable_source()->CopyFrom(disk1);
+  createVolume.set_target_type(Resource::DiskInfo::Source::BLOCK);
+
+  error = operation::validate(createVolume);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(strings::contains(
+      error->message,
+      "'target_type' is neither MOUNT or PATH"));
+}
+
+
+TEST(OperationValidationTest, DestroyVolume)
+{
+  Resource disk1 = createDiskResource(
+      "10", "*", None(), None(), createDiskSourceMount());
+
+  Resource disk2 = createDiskResource(
+      "20", "*", None(), None(), createDiskSourcePath());
+
+  Resource disk3 = createDiskResource(
+      "30", "*", None(), None(), createDiskSourceRaw());
+
+  disk1.mutable_provider_id()->set_value("provider1");
+  disk3.mutable_provider_id()->set_value("provider3");
+
+  Offer::Operation::DestroyVolume destroyVolume;
+  destroyVolume.mutable_volume()->CopyFrom(disk1);
+
+  Option<Error> error = operation::validate(destroyVolume);
+  EXPECT_NONE(error);
+
+  destroyVolume.mutable_volume()->CopyFrom(disk2);
+
+  error = operation::validate(destroyVolume);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(strings::contains(
+      error->message,
+      "Does not have a resource provider"));
+
+  destroyVolume.mutable_volume()->CopyFrom(disk3);
+
+  error = operation::validate(destroyVolume);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(strings::contains(
+      error->message,
+      "'volume' is neither a MOUTN or PATH disk resource"));
+}
+
+
+TEST(OperationValidationTest, CreateBlock)
+{
+  Resource disk1 = createDiskResource(
+      "10", "*", None(), None(), createDiskSourceRaw());
+
+  Resource disk2 = createDiskResource(
+      "20", "*", None(), None(), createDiskSourceMount());
+
+  Resource disk3 = createDiskResource(
+      "30", "*", None(), None(), createDiskSourceRaw());
+
+  disk1.mutable_provider_id()->set_value("provider1");
+  disk2.mutable_provider_id()->set_value("provider2");
+
+  Offer::Operation::CreateBlock createBlock;
+  createBlock.mutable_source()->CopyFrom(disk1);
+
+  Option<Error> error = operation::validate(createBlock);
+  EXPECT_NONE(error);
+
+  createBlock.mutable_source()->CopyFrom(disk2);
+
+  error = operation::validate(createBlock);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(strings::contains(
+      error->message,
+      "'source' is not a RAW disk resource"));
+
+  createBlock.mutable_source()->CopyFrom(disk3);
+
+  error = operation::validate(createBlock);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(strings::contains(
+      error->message,
+      "Does not have a resource provider"));
+}
+
+
+TEST(OperationValidationTest, DestroyBlock)
+{
+  Resource disk1 = createDiskResource(
+      "10", "*", None(), None(), createDiskSourceBlock());
+
+  Resource disk2 = createDiskResource(
+      "20", "*", None(), None(), createDiskSourceBlock());
+
+  Resource disk3 = createDiskResource(
+      "30", "*", None(), None(), createDiskSourceMount());
+
+  disk1.mutable_provider_id()->set_value("provider1");
+  disk3.mutable_provider_id()->set_value("provider3");
+
+  Offer::Operation::DestroyBlock destroyBlock;
+  destroyBlock.mutable_block()->CopyFrom(disk1);
+
+  Option<Error> error = operation::validate(destroyBlock);
+  EXPECT_NONE(error);
+
+  destroyBlock.mutable_block()->CopyFrom(disk2);
+
+  error = operation::validate(destroyBlock);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(strings::contains(
+      error->message,
+      "Does not have a resource provider"));
+
+  destroyBlock.mutable_block()->CopyFrom(disk3);
+
+  error = operation::validate(destroyBlock);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(strings::contains(
+      error->message,
+      "'block' is not a BLOCK disk resource"));
+}
+
+
 // TODO(jieyu): All of the task validation tests have the same flow:
 // launch a task, expect an update of a particular format (invalid w/
 // message). Consider providing common functionalities in the test
@@ -1047,7 +1411,7 @@ TEST_F(TaskValidationTest, ExecutorUsesInvalidFrameworkID)
   // Create an executor with a random framework id.
   ExecutorInfo executor;
   executor = DEFAULT_EXECUTOR_INFO;
-  executor.mutable_framework_id()->set_value(UUID::random().toString());
+  executor.mutable_framework_id()->set_value(id::UUID::random().toString());
 
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(LaunchTasks(executor, 1, 1, 16, "*"))
@@ -1217,7 +1581,7 @@ TEST_F(TaskValidationTest, TaskUsesCommandInfoAndExecutorInfo)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -1346,7 +1710,7 @@ TEST_F(TaskValidationTest, TaskUsesNoResources)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   TaskInfo task;
   task.set_name("");
@@ -1395,7 +1759,7 @@ TEST_F(TaskValidationTest, TaskUsesMoreResourcesThanOffered)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   TaskInfo task;
   task.set_name("");
@@ -1456,7 +1820,7 @@ TEST_F(TaskValidationTest, DuplicatedTaskID)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   ExecutorInfo executor;
   executor.mutable_executor_id()->set_value("default");
@@ -1540,7 +1904,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnSameSlave)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   ExecutorInfo executor;
   executor.mutable_executor_id()->set_value("default");
@@ -1634,7 +1998,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnDifferentSlaves)
   ASSERT_SOME(slave1);
 
   AWAIT_READY(offers1);
-  EXPECT_NE(0u, offers1->size());
+  ASSERT_FALSE(offers1->empty());
 
   // Launch the first task with the default executor id.
   ExecutorInfo executor1;
@@ -1672,7 +2036,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnDifferentSlaves)
   ASSERT_SOME(slave2);
 
   AWAIT_READY(offers2);
-  EXPECT_NE(0u, offers2->size());
+  ASSERT_FALSE(offers2->empty());
 
   // Now launch the second task with the same executor id but
   // a different executor command.
@@ -1754,14 +2118,20 @@ TEST_F(TaskValidationTest, TaskReusesUnreachableTaskID)
   Offer offer1 = offers1.get()[0];
   TaskInfo task1 = createTask(offer1, "sleep 60");
 
+  Future<TaskStatus> startingStatus;
   Future<TaskStatus> runningStatus;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&startingStatus))
     .WillOnce(FutureArg<1>(&runningStatus));
 
   Future<Nothing> statusUpdateAck = FUTURE_DISPATCH(
       slave1.get()->pid, &Slave::_statusUpdateAcknowledgement);
 
   driver.launchTasks(offer1.id(), {task1});
+
+  AWAIT_READY(startingStatus);
+  EXPECT_EQ(TASK_STARTING, startingStatus->state());
+  EXPECT_EQ(task1.task_id(), startingStatus->task_id());
 
   AWAIT_READY(runningStatus);
   EXPECT_EQ(TASK_RUNNING, runningStatus->state());
@@ -2024,7 +2394,7 @@ TEST_F(TaskValidationTest, ExecutorShutdownGracePeriodIsNonNegative)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
   Offer offer = offers.get()[0];
 
   ExecutorInfo executorInfo(DEFAULT_EXECUTOR_INFO);
@@ -2082,7 +2452,7 @@ TEST_F(TaskValidationTest, KillPolicyGracePeriodIsNonNegative)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
   Offer offer = offers.get()[0];
 
   TaskInfo task;
@@ -2140,7 +2510,7 @@ TEST_F(TaskValidationTest, TaskEnvironmentInvalid)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -2190,7 +2560,7 @@ TEST_F(ExecutorValidationTest, ExecutorType)
 {
   ExecutorInfo executorInfo;
   executorInfo = DEFAULT_EXECUTOR_INFO;
-  executorInfo.mutable_framework_id()->set_value(UUID::random().toString());
+  executorInfo.mutable_framework_id()->set_value(id::UUID::random().toString());
 
   {
     // 'CUSTOM' executor with `CommandInfo` set is valid.
@@ -2571,7 +2941,7 @@ TEST_F(TaskGroupValidationTest, ExecutorUsesDockerContainerInfo)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   Offer offer = offers.get()[0];
 
@@ -2670,7 +3040,7 @@ TEST_F(TaskGroupValidationTest, ExecutorWithoutFrameworkId)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   // Create an invalid executor without framework id.
   ExecutorInfo executor;
@@ -2759,7 +3129,7 @@ TEST_F(TaskGroupValidationTest, TaskUsesDockerContainerInfo)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   Offer offer = offers.get()[0];
 
@@ -2848,7 +3218,7 @@ TEST_F(TaskGroupValidationTest, TaskUsesNetworkInfo)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
   Offer offer = offers.get()[0];
 
   Resources resources = Resources::parse("cpus:1;mem:512;disk:32").get();
@@ -2939,7 +3309,7 @@ TEST_F(TaskGroupValidationTest, TaskUsesDifferentExecutor)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
   Offer offer = offers.get()[0];
 
   Resources resources = Resources::parse("cpus:1;mem:512;disk:32").get();
@@ -3034,7 +3404,7 @@ TEST_F(TaskGroupValidationTest, ExecutorEnvironmentInvalid)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   TaskInfo task1;
   task1.set_name("1");
@@ -3138,7 +3508,7 @@ TEST_F(TaskGroupValidationTest, TaskEnvironmentInvalid)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   TaskInfo task1;
   task1.set_name("1");
@@ -3333,7 +3703,8 @@ TEST_F(FrameworkInfoValidationTest, MissingMultiRoleCapability)
   ASSERT_SOME(master);
 
   FrameworkInfo framework = DEFAULT_FRAMEWORK_INFO;
-  framework.add_roles("role");
+  framework.clear_capabilities();
+  framework.set_roles(0, "role");
 
   MockScheduler sched;
   MesosSchedulerDriver driver(
@@ -3356,7 +3727,7 @@ TEST_F(FrameworkInfoValidationTest, AcceptMultiRoleFramework)
   ASSERT_SOME(master);
 
   FrameworkInfo framework = DEFAULT_FRAMEWORK_INFO;
-  framework.add_roles("role1");
+  framework.set_roles(0, "role1");
   framework.add_roles("role2");
   framework.add_capabilities()->set_type(
       FrameworkInfo::Capability::MULTI_ROLE);
@@ -3386,7 +3757,7 @@ TEST_F(FrameworkInfoValidationTest, MultiRoleWhitelist)
   ASSERT_SOME(master);
 
   FrameworkInfo framework = DEFAULT_FRAMEWORK_INFO;
-  framework.add_roles("role1");
+  framework.set_roles(0, "role1");
   framework.add_roles("role2");
   framework.add_capabilities()->set_type(
       FrameworkInfo::Capability::MULTI_ROLE);
@@ -3419,6 +3790,8 @@ TEST_F(FrameworkInfoValidationTest, UpgradeToMultiRole)
   ASSERT_SOME(master);
 
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.clear_capabilities();
+  frameworkInfo.clear_roles();
   frameworkInfo.set_role("role");
 
   // Set a long failover timeout so the framework isn't immediately removed.
@@ -3485,7 +3858,12 @@ TEST_F(FrameworkInfoValidationTest, DowngradeFromMultipleRoles)
   ASSERT_SOME(master);
 
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
-  frameworkInfo.add_roles("role1");
+
+  // TODO(mpark): Remove this once `RESERVATION_REFINEMENT`
+  // is removed from `DEFAULT_FRAMEWORK_INFO`.
+  frameworkInfo.clear_capabilities();
+
+  frameworkInfo.set_roles(0, "role1");
   frameworkInfo.add_roles("role2");
   frameworkInfo.add_capabilities()->set_type(
       FrameworkInfo::Capability::MULTI_ROLE);
@@ -3555,9 +3933,7 @@ TEST_F(FrameworkInfoValidationTest, RoleChangeWithMultiRole)
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
 
   ASSERT_FALSE(frameworkInfo.has_role());
-  frameworkInfo.add_roles("role1");
-  frameworkInfo.add_capabilities()->set_type(
-      FrameworkInfo::Capability::MULTI_ROLE);
+  frameworkInfo.set_roles(0, "role1");
 
   // Set a long failover timeout so the framework isn't immediately removed.
   frameworkInfo.set_failover_timeout(Weeks(1).secs());
@@ -3627,6 +4003,8 @@ TEST_F(FrameworkInfoValidationTest, RoleChangeWithMultiRoleMasterFailover)
   // immediately cleaned up.
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_failover_timeout(Weeks(1).secs());
+  frameworkInfo.clear_capabilities();
+  frameworkInfo.clear_roles();
   frameworkInfo.set_role("role1");
 
   Future<FrameworkID> frameworkId;
@@ -3724,6 +4102,159 @@ TEST_F(FrameworkInfoValidationTest, RoleChangeWithMultiRoleMasterFailover)
     driver.stop();
     driver.join();
   }
+}
+
+
+class RegisterSlaveValidationTest : public MesosTest {};
+
+
+TEST_F(RegisterSlaveValidationTest, DropInvalidReregistration)
+{
+  Clock::pause();
+
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  Future<SlaveRegisteredMessage> slaveRegisteredMessage =
+    FUTURE_PROTOBUF(SlaveRegisteredMessage(), master.get()->pid, _);
+
+  StandaloneMasterDetector detector(master.get()->pid);
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  Try<Owned<cluster::Slave>> slave = StartSlave(&detector, slaveFlags);
+  ASSERT_SOME(slave);
+
+  Clock::advance(slaveFlags.authentication_backoff_factor);
+  Clock::advance(slaveFlags.registration_backoff_factor);
+
+  // Wait until the master acknowledges the slave registration.
+  AWAIT_READY(slaveRegisteredMessage);
+
+  // Drop and capture the slave's ReregisterSlaveMessage.
+  Future<ReregisterSlaveMessage> reregisterSlaveMessage =
+    DROP_PROTOBUF(ReregisterSlaveMessage(), slave.get()->pid, _);
+
+  // Simulate a new master detected event on the slave,
+  // so that the slave will do a re-registration.
+  detector.appoint(master.get()->pid);
+
+  Clock::advance(slaveFlags.authentication_backoff_factor);
+  Clock::advance(slaveFlags.registration_backoff_factor);
+
+  AWAIT_READY(reregisterSlaveMessage);
+
+  // Now that we have a valid ReregisterSlaveMessage, tweak it to
+  // fail validation.
+  ReregisterSlaveMessage message = reregisterSlaveMessage.get();
+
+  Task* task = message.add_tasks();
+  task->set_name(id::UUID::random().toString());
+  task->mutable_slave_id()->set_value(id::UUID::random().toString());
+  task->mutable_task_id()->set_value(id::UUID::random().toString());
+  task->mutable_framework_id()->set_value(id::UUID::random().toString());
+  task->mutable_executor_id()->set_value(id::UUID::random().toString());
+  task->set_state(TASK_RUNNING);
+
+  // We expect the master to drop the ReregisterSlaveMessage, so it
+  // will not send any more SlaveReregisteredMessage responses.
+  EXPECT_NO_FUTURE_PROTOBUFS(SlaveReregisteredMessage(), _, _);
+
+  // Send the modified message to the master.
+  process::post(slave.get()->pid, master->get()->pid, message);
+
+  // Settle the clock to retire in-flight messages.
+  Clock::settle();
+}
+
+
+TEST_F(RegisterSlaveValidationTest, DropInvalidRegistration)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  // Drop and capture the slave's RegisterSlaveMessage.
+  Future<RegisterSlaveMessage> registerSlaveMessage =
+    DROP_PROTOBUF(RegisterSlaveMessage(), _, _);
+
+  // We expect the master to drop the RegisterSlaveMessage, so it
+  // will never send any SlaveRegisteredMessage responses.
+  EXPECT_NO_FUTURE_PROTOBUFS(SlaveRegisteredMessage(), _, _);
+
+  Clock::pause();
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+  ASSERT_SOME(slave);
+
+  Clock::advance(slaveFlags.authentication_backoff_factor);
+  Clock::advance(slaveFlags.registration_backoff_factor);
+
+  AWAIT_READY(registerSlaveMessage);
+
+  // Now that we have a valid RegisterSlaveMessage, tweak it to
+  // fail validation by setting an invalid slave ID,
+  RegisterSlaveMessage message = registerSlaveMessage.get();
+
+  SlaveInfo* slaveInfo = message.mutable_slave();
+  slaveInfo->mutable_id()->set_value(
+      strings::join(
+          "/../",
+          id::UUID::random().toString(),
+          id::UUID::random().toString(),
+          id::UUID::random().toString()));
+
+  // Send the modified message to the master.
+  process::post(slave.get()->pid, master->get()->pid, message);
+
+  // Settle the clock to retire in-flight messages.
+  Clock::settle();
+}
+
+
+// Test that duplicate ExecutorIDs are correctly handled when
+// validating the ReregisterSlaveMessage.
+TEST_F(RegisterSlaveValidationTest, DuplicateExecutorID)
+{
+  ReregisterSlaveMessage message;
+
+  SlaveInfo *slaveInfo = message.mutable_slave();
+  slaveInfo->mutable_id()->set_value("agent-id");
+  slaveInfo->mutable_resources()->CopyFrom(
+      Resources::parse("cpus:2;mem:10").get());
+
+  FrameworkInfo *framework = message.add_frameworks();
+  framework->CopyFrom(DEFAULT_FRAMEWORK_INFO);
+  framework->set_name("framework1");
+  framework->mutable_id()->set_value("framework1");
+
+  framework = message.add_frameworks();
+  framework->CopyFrom(DEFAULT_FRAMEWORK_INFO);
+  framework->set_name("framework2");
+  framework->mutable_id()->set_value("framework2");
+
+  ExecutorInfo *executor = message.add_executor_infos();
+  executor->CopyFrom(DEFAULT_EXECUTOR_INFO);
+  executor->mutable_framework_id()->set_value("framework1");
+
+  executor = message.add_executor_infos();
+  executor->CopyFrom(DEFAULT_EXECUTOR_INFO);
+  executor->mutable_framework_id()->set_value("framework2");
+
+  // Executors with the same ID in different frameworks are allowed.
+  EXPECT_EQ(message.executor_infos(0).executor_id(),
+            message.executor_infos(1).executor_id());
+  EXPECT_NE(message.executor_infos(0).framework_id(),
+            message.executor_infos(1).framework_id());
+  EXPECT_NONE(master::validation::master::message::reregisterSlave(message));
+
+  executor->mutable_framework_id()->set_value("framework1");
+
+  // Executors with the same ID in in the same framework are not allowed.
+  EXPECT_EQ(message.executor_infos(0).executor_id(),
+            message.executor_infos(1).executor_id());
+  EXPECT_EQ(message.executor_infos(0).framework_id(),
+            message.executor_infos(1).framework_id());
+  EXPECT_SOME(master::validation::master::message::reregisterSlave(message));
 }
 
 } // namespace tests {

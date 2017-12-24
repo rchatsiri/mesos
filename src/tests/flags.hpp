@@ -25,6 +25,8 @@
 #include <stout/flags.hpp>
 #include <stout/os.hpp>
 
+#include <stout/os/realpath.hpp>
+
 #include "common/parse.hpp"
 
 #include "logging/logging.hpp"
@@ -82,7 +84,7 @@ public:
 
     add(&Flags::docker_socket,
         "docker_socket",
-        "Resource used by the agent and the executor to provice CLI access\n"
+        "Resource used by the agent and the executor to provide CLI access\n"
         "to the Docker daemon. On Unix, this is typically a path to a\n"
         "socket, such as '/var/run/docker.sock'. On Windows this must be a\n"
         "named pipe, such as '//./pipe/docker_engine'. NOTE: This must be\n"
@@ -143,7 +145,7 @@ public:
         "modules_dir",
         "Directory path of the module manifest files.\n"
         "The manifest files are processed in alphabetical order.\n"
-        "(See --modules for more information on module manifest files)\n"
+        "(See --modules for more information on module manifest files).\n"
         "Cannot be used in conjunction with --modules.\n");
 
     // This help message is duplicated from slave/flags.hpp and

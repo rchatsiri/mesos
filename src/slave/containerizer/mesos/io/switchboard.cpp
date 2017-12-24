@@ -150,6 +150,12 @@ bool IOSwitchboard::supportsNesting()
 }
 
 
+bool IOSwitchboard::supportsStandalone()
+{
+  return true;
+}
+
+
 Future<Nothing> IOSwitchboard::recover(
     const list<ContainerState>& states,
     const hashset<ContainerID>& orphans)
@@ -500,7 +506,7 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   switchboardFlags.socket_path = path::join(
       stringify(os::PATH_SEPARATOR),
       "tmp",
-      "mesos-io-switchboard-" + UUID::random().toString());
+      "mesos-io-switchboard-" + id::UUID::random().toString());
 
   // Just before launching our io switchboard server, we need to
   // create a directory to hold checkpointed files related to the
@@ -906,7 +912,7 @@ void IOSwitchboard::reaped(
 }
 
 
-const char IOSwitchboardServer::NAME[]          = "mesos-io-switchboard";
+const char IOSwitchboardServer::NAME[] = "mesos-io-switchboard";
 
 
 class IOSwitchboardServerProcess : public Process<IOSwitchboardServerProcess>
@@ -1634,16 +1640,11 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
                   -> ControlFlow<http::Response> {
                 return Continue();
               }))
-              // TODO(benh):
-              // .recover(defer(self(), [=](...) {
-              //   failure = Failure("Failed writing to stdin: discarded");
-              //   return Break(http::InternalServerError(failure->message));
-              // }))
-              .repair(defer(self(), [=](
+              .recover(defer(self(), [=](
                   const Future<ControlFlow<http::Response>>& future)
                   -> ControlFlow<http::Response> {
                 failure = Failure(
-                    "Failed writing to stdin: " + future.failure());
+                    "Failed writing to stdin: " + stringify(future));
                 return Break(http::InternalServerError(failure->message));
               }));
           }

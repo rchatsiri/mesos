@@ -50,17 +50,18 @@
 #include <stout/bytes.hpp>
 #include <stout/error.hpp>
 #include <stout/ip.hpp>
-#ifdef __WINDOWS__
-#include <stout/windows/net.hpp>
-#else
-#include <stout/posix/net.hpp>
-#endif // __WINDOWS__
 #include <stout/option.hpp>
 #include <stout/stringify.hpp>
 #include <stout/try.hpp>
 
 #include <stout/os/int_fd.hpp>
 #include <stout/os/open.hpp>
+
+#ifdef __WINDOWS__
+#include <stout/windows/net.hpp>
+#else
+#include <stout/posix/net.hpp>
+#endif // __WINDOWS__
 
 
 // Network utilities.
@@ -163,7 +164,8 @@ inline Try<int> download(const std::string& url, const std::string& path)
   // We don't bother introducing a `os::fdopen` since this is the only place
   // we use `fdopen` in the entire codebase as of writing this comment.
 #ifdef __WINDOWS__
-  FILE* file = ::_fdopen(fd->crt(), "w");
+  // We open in "binary" mode on Windows to avoid line-ending translation.
+  FILE* file = ::_fdopen(fd->crt(), "wb");
 #else
   FILE* file = ::fdopen(fd.get(), "w");
 #endif
@@ -190,146 +192,6 @@ inline Try<int> download(const std::string& url, const std::string& path)
   }
 
   return Try<int>::some(code);
-}
-
-
-inline struct addrinfo createAddrInfo(int socktype, int family, int flags)
-{
-  struct addrinfo addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.ai_socktype = socktype;
-  addr.ai_family = family;
-  addr.ai_flags |= flags;
-
-  return addr;
-}
-
-
-inline Try<std::string> hostname()
-{
-  char host[512];
-
-  if (gethostname(host, sizeof(host)) < 0) {
-    return ErrnoError();
-  }
-
-  // TODO(evelinad): Add AF_UNSPEC when we will support IPv6.
-  struct addrinfo hints = createAddrInfo(SOCK_STREAM, AF_INET, AI_CANONNAME);
-  struct addrinfo* result = nullptr;
-
-  int error = getaddrinfo(host, nullptr, &hints, &result);
-
-  if (error != 0) {
-    return Error(gai_strerror(error));
-  }
-
-  std::string hostname = result->ai_canonname;
-  freeaddrinfo(result);
-
-  return hostname;
-}
-
-
-// Returns a Try of the hostname for the provided IP. If the hostname
-// cannot be resolved, then a string version of the IP address is
-// returned.
-//
-// TODO(benh): Merge with `net::hostname`.
-inline Try<std::string> getHostname(const IP& ip)
-{
-  struct sockaddr_storage storage;
-  memset(&storage, 0, sizeof(storage));
-
-  switch (ip.family()) {
-    case AF_INET: {
-      struct sockaddr_in addr;
-      memset(&addr, 0, sizeof(addr));
-      addr.sin_family = AF_INET;
-      addr.sin_addr = ip.in().get();
-      addr.sin_port = 0;
-
-      memcpy(&storage, &addr, sizeof(addr));
-      break;
-    }
-    default: {
-      ABORT("Unsupported family type: " + stringify(ip.family()));
-    }
-  }
-
-  char hostname[MAXHOSTNAMELEN];
-
-  int error = getnameinfo(
-      (struct sockaddr*) &storage,
-#ifdef __FreeBSD__
-      sizeof(struct sockaddr_in),
-#else
-      sizeof(storage),
-#endif
-      hostname,
-      MAXHOSTNAMELEN,
-      nullptr,
-      0,
-      0);
-
-  if (error != 0) {
-    return Error(std::string(gai_strerror(error)));
-  }
-
-  return std::string(hostname);
-}
-
-
-// Returns the names of all the link devices in the system.
-inline Try<std::set<std::string>> links()
-{
-#if !defined(__linux__) && !defined(__APPLE__) && !defined(__FreeBSD__)
-  return Error("Not implemented");
-#else
-  struct ifaddrs* ifaddr = nullptr;
-  if (getifaddrs(&ifaddr) == -1) {
-    return ErrnoError();
-  }
-
-  std::set<std::string> names;
-  for (struct ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
-    if (ifa->ifa_name != nullptr) {
-      names.insert(ifa->ifa_name);
-    }
-  }
-
-  freeifaddrs(ifaddr);
-  return names;
-#endif
-}
-
-
-// Returns a Try of the IP for the provided hostname or an error if no IP is
-// obtained.
-inline Try<IP> getIP(const std::string& hostname, int family)
-{
-  struct addrinfo hints = createAddrInfo(SOCK_STREAM, family, 0);
-  struct addrinfo* result = nullptr;
-
-  int error = getaddrinfo(hostname.c_str(), nullptr, &hints, &result);
-
-  if (error != 0) {
-    return Error(gai_strerror(error));
-  }
-
-  if (result->ai_addr == nullptr) {
-    freeaddrinfo(result);
-    return Error("No addresses found");
-  }
-
-  Try<IP> ip = IP::create(*result->ai_addr);
-
-  if (ip.isError()) {
-    freeaddrinfo(result);
-    return Error("Unsupported family type");
-  }
-
-  freeaddrinfo(result);
-  return ip.get();
 }
 
 } // namespace net {

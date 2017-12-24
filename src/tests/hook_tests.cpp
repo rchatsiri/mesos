@@ -59,7 +59,9 @@ using mesos::internal::master::Master;
 
 using mesos::internal::protobuf::createLabel;
 
+using mesos::internal::slave::Containerizer;
 using mesos::internal::slave::DockerContainerizer;
+using mesos::internal::slave::executorEnvironment;
 using mesos::internal::slave::Fetcher;
 using mesos::internal::slave::MesosContainerizer;
 using mesos::internal::slave::Slave;
@@ -175,7 +177,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(HookTest, VerifyMasterLaunchTaskHook)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   TaskInfo task;
   task.set_name("");
@@ -286,10 +288,12 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(
     VerifySlaveExecutorEnvironmentDecorator)
 {
   const string& directory = os::getcwd(); // We're inside a temporary sandbox.
-  Fetcher fetcher;
+
+  slave::Flags flags = CreateSlaveFlags();
+  Fetcher fetcher(flags);
 
   Try<MesosContainerizer*> _containerizer =
-    MesosContainerizer::create(CreateSlaveFlags(), false, &fetcher);
+    MesosContainerizer::create(flags, false, &fetcher);
 
   ASSERT_SOME(_containerizer);
   Owned<MesosContainerizer> containerizer(_containerizer.get());
@@ -304,28 +308,24 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(
   SlaveID slaveId = SlaveID();
 
   std::map<string, string> environment = executorEnvironment(
-      CreateSlaveFlags(),
+      flags,
       executorInfo,
       directory,
       slaveId,
       PID<Slave>(),
+      None(),
       false);
 
   // Test hook adds a new environment variable "FOO" to the executor
   // with a value "bar". A '0' (success) exit status for the following
   // command validates the hook.
-  process::Future<bool> launch = containerizer->launch(
+  process::Future<Containerizer::LaunchResult> launch = containerizer->launch(
       containerId,
-      None(),
-      executorInfo,
-      directory,
-      None(),
-      slaveId,
+      createContainerConfig(None(), executorInfo, directory),
       environment,
-      false);
+      None());
 
-  AWAIT_READY(launch);
-  ASSERT_TRUE(launch.get());
+  AWAIT_ASSERT_EQ(Containerizer::LaunchResult::SUCCESS, launch);
 
   // Wait on the container.
   Future<Option<ContainerTermination>> wait =
@@ -373,7 +373,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(HookTest, VerifySlaveLaunchExecutorHook)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   // Launch a task with the command executor.
   TaskInfo task;
@@ -637,7 +637,8 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(HookTest, VerifySlaveTaskStatusDecorator)
 
 // This test verifies that the slave pre-launch docker environment
 // decorator can attach environment variables to a task exclusively.
-TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerTaskExecutorDecorator)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+  HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerTaskExecutorDecorator)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -649,7 +650,7 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerTaskExecutorDecorator)
 
   slave::Flags flags = CreateSlaveFlags();
 
-  Fetcher fetcher;
+  Fetcher fetcher(flags);
 
   Try<ContainerLogger*> logger =
     ContainerLogger::create(flags.container_logger);
@@ -701,14 +702,16 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerTaskExecutorDecorator)
   task.mutable_container()->CopyFrom(containerInfo);
 
   Future<ContainerID> containerId;
-  EXPECT_CALL(containerizer, launch(_, _, _, _, _, _, _, _))
+  EXPECT_CALL(containerizer, launch(_, _, _, _))
     .WillOnce(DoAll(FutureArg<0>(&containerId),
                     Invoke(&containerizer,
                            &MockDockerContainerizer::_launch)));
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusFinished;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusFinished))
     .WillRepeatedly(DoDefault());
@@ -716,6 +719,8 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerTaskExecutorDecorator)
   driver.launchTasks(offers.get()[0].id(), {task});
 
   AWAIT_READY_FOR(containerId, Seconds(60));
+  AWAIT_READY_FOR(statusStarting, Seconds(60));
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
   AWAIT_READY_FOR(statusRunning, Seconds(60));
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
   AWAIT_READY_FOR(statusFinished, Seconds(60));
@@ -731,13 +736,13 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerTaskExecutorDecorator)
   EXPECT_SOME(termination.get());
 
   Future<list<Docker::Container>> containers =
-    docker.get()->ps(true, slave::DOCKER_NAME_PREFIX);
+    docker->ps(true, slave::DOCKER_NAME_PREFIX);
 
   AWAIT_READY(containers);
 
   // Cleanup all mesos launched containers.
   foreach (const Docker::Container& container, containers.get()) {
-    AWAIT_READY_FOR(docker.get()->rm(container.id, true), Seconds(30));
+    AWAIT_READY_FOR(docker->rm(container.id, true), Seconds(30));
   }
 }
 
@@ -745,7 +750,8 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerTaskExecutorDecorator)
 // This test verifies that the slave pre-launch docker validator hook can check
 // labels on a task and subsequently prevent the task from being launched
 // if a specific label is present.
-TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerValidator)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+  HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerValidator)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -757,7 +763,7 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerValidator)
 
   slave::Flags flags = CreateSlaveFlags();
 
-  Fetcher fetcher;
+  Fetcher fetcher(flags);
 
   Try<ContainerLogger*> logger =
     ContainerLogger::create(flags.container_logger);
@@ -839,7 +845,8 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerValidator)
 // directory. When the docker container launched, the sandbox directory
 // is mounted to the docker container. We validate the hook by verifying
 // the "foo" file exists in the docker container or not.
-TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerHook)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+  HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerHook)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -851,7 +858,7 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerHook)
 
   slave::Flags flags = CreateSlaveFlags();
 
-  Fetcher fetcher;
+  Fetcher fetcher(flags);
 
   Try<ContainerLogger*> logger =
     ContainerLogger::create(flags.container_logger);
@@ -888,7 +895,7 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerHook)
   AWAIT_READY(frameworkId);
 
   AWAIT_READY(offers);
-  ASSERT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   const Offer& offer = offers.get()[0];
 
@@ -916,14 +923,16 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerHook)
   tasks.push_back(task);
 
   Future<ContainerID> containerId;
-  EXPECT_CALL(containerizer, launch(_, _, _, _, _, _, _, _))
+  EXPECT_CALL(containerizer, launch(_, _, _, _))
     .WillOnce(DoAll(FutureArg<0>(&containerId),
                     Invoke(&containerizer,
                            &MockDockerContainerizer::_launch)));
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusFinished;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusFinished))
     .WillRepeatedly(DoDefault());
@@ -931,6 +940,8 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerHook)
   driver.launchTasks(offers.get()[0].id(), tasks);
 
   AWAIT_READY_FOR(containerId, Seconds(60));
+  AWAIT_READY_FOR(statusStarting, Seconds(60));
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
   AWAIT_READY_FOR(statusRunning, Seconds(60));
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
   AWAIT_READY_FOR(statusFinished, Seconds(60));
@@ -946,13 +957,13 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerHook)
   EXPECT_SOME(termination.get());
 
   Future<list<Docker::Container>> containers =
-    docker.get()->ps(true, slave::DOCKER_NAME_PREFIX);
+    docker->ps(true, slave::DOCKER_NAME_PREFIX);
 
   AWAIT_READY(containers);
 
   // Cleanup all mesos launched containers.
   foreach (const Docker::Container& container, containers.get()) {
-    AWAIT_READY_FOR(docker.get()->rm(container.id, true), Seconds(30));
+    AWAIT_READY_FOR(docker->rm(container.id, true), Seconds(30));
   }
 }
 
@@ -963,7 +974,7 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerHook)
 // will try to delete that file in the sandbox directory. We validate
 // the hook by verifying that "post_fetch_hook" file does not exist in
 // the sandbox when container is running.
-TEST_F(HookTest, ROOT_DOCKER_VerifySlavePostFetchHook)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(HookTest, ROOT_DOCKER_VerifySlavePostFetchHook)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -977,7 +988,7 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePostFetchHook)
 
   slave::Flags flags = CreateSlaveFlags();
 
-  Fetcher fetcher;
+  Fetcher fetcher(flags);
 
   Try<ContainerLogger*> logger =
     ContainerLogger::create(flags.container_logger);
@@ -1015,7 +1026,7 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePostFetchHook)
   driver.start();
 
   AWAIT_READY(offers);
-  ASSERT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   TaskInfo task = createTask(
       offers.get()[0].slave_id(),
@@ -1036,13 +1047,18 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePostFetchHook)
   ContainerInfo::DockerInfo* dockerInfo = containerInfo->mutable_docker();
   dockerInfo->set_image("alpine");
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusFinished;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusFinished));
 
   driver.launchTasks(offers.get()[0].id(), {task});
+
+  AWAIT_READY_FOR(statusStarting, Seconds(60));
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
 
   AWAIT_READY_FOR(statusRunning, Seconds(60));
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
@@ -1072,8 +1088,7 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePostFetchHook)
 // Test that the changes made by the resources decorator hook are correctly
 // propagated to the resource offer.
 TEST_F_TEMP_DISABLED_ON_WINDOWS(
-    HookTest,
-    VerifySlaveResourcesAndAttributesDecorator)
+    HookTest, VerifySlaveResourcesAndAttributesDecorator)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -1101,7 +1116,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   Resources resources = offers.get()[0].resources();
 
@@ -1117,7 +1132,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(
 
   EXPECT_EQ(TEST_HOOK_CPUS, resources.cpus().get());
 
-  const string allocationRole = DEFAULT_FRAMEWORK_INFO.role();
+  const string allocationRole = DEFAULT_FRAMEWORK_INFO.roles(0);
   EXPECT_TRUE(resources.contains(
       allocatedResources(TEST_HOOK_ADDITIONAL_RESOURCES, allocationRole)));
 

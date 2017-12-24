@@ -39,13 +39,13 @@ namespace tests {
 
 // The following actions make up for the fact that DoDefault
 // cannot be used inside a DoAll, for example:
-// EXPECT_CALL(allocator, addFramework(_, _, _, _))
+// EXPECT_CALL(allocator, addFramework(_, _, _, _, _))
 //   .WillOnce(DoAll(InvokeAddFramework(&allocator),
 //                   FutureSatisfy(&addFramework)));
 
 ACTION_P(InvokeInitialize, allocator)
 {
-  allocator->real->initialize(arg0, arg1, arg2, arg3);
+  allocator->real->initialize(arg0, arg1, arg2, arg3, arg4);
 }
 
 
@@ -57,7 +57,7 @@ ACTION_P(InvokeRecover, allocator)
 
 ACTION_P(InvokeAddFramework, allocator)
 {
-  allocator->real->addFramework(arg0, arg1, arg2, arg3);
+  allocator->real->addFramework(arg0, arg1, arg2, arg3, arg4);
 }
 
 
@@ -81,7 +81,7 @@ ACTION_P(InvokeDeactivateFramework, allocator)
 
 ACTION_P(InvokeUpdateFramework, allocator)
 {
-  allocator->real->updateFramework(arg0, arg1);
+  allocator->real->updateFramework(arg0, arg1, arg2);
 }
 
 
@@ -99,7 +99,13 @@ ACTION_P(InvokeRemoveSlave, allocator)
 
 ACTION_P(InvokeUpdateSlave, allocator)
 {
-  allocator->real->updateSlave(arg0, arg1, arg2);
+  allocator->real->updateSlave(arg0, arg1, arg2, arg3);
+}
+
+
+ACTION_P(InvokeAddResourceProvider, allocator)
+{
+  allocator->real->addResourceProvider(arg0, arg1, arg2);
 }
 
 
@@ -229,9 +235,9 @@ public:
     // to get the best of both worlds: the ability to use 'DoDefault'
     // and no warnings when expectations are not explicit.
 
-    ON_CALL(*this, initialize(_, _, _, _))
+    ON_CALL(*this, initialize(_, _, _, _, _, _))
       .WillByDefault(InvokeInitialize(this));
-    EXPECT_CALL(*this, initialize(_, _, _, _))
+    EXPECT_CALL(*this, initialize(_, _, _, _, _, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, recover(_, _))
@@ -239,9 +245,9 @@ public:
     EXPECT_CALL(*this, recover(_, _))
       .WillRepeatedly(DoDefault());
 
-    ON_CALL(*this, addFramework(_, _, _, _))
+    ON_CALL(*this, addFramework(_, _, _, _, _))
       .WillByDefault(InvokeAddFramework(this));
-    EXPECT_CALL(*this, addFramework(_, _, _, _))
+    EXPECT_CALL(*this, addFramework(_, _, _, _, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, removeFramework(_))
@@ -259,9 +265,9 @@ public:
     EXPECT_CALL(*this, deactivateFramework(_))
       .WillRepeatedly(DoDefault());
 
-    ON_CALL(*this, updateFramework(_, _))
+    ON_CALL(*this, updateFramework(_, _, _))
       .WillByDefault(InvokeUpdateFramework(this));
-    EXPECT_CALL(*this, updateFramework(_, _))
+    EXPECT_CALL(*this, updateFramework(_, _, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, addSlave(_, _, _, _, _, _))
@@ -274,9 +280,14 @@ public:
     EXPECT_CALL(*this, removeSlave(_))
       .WillRepeatedly(DoDefault());
 
-    ON_CALL(*this, updateSlave(_, _, _))
+    ON_CALL(*this, updateSlave(_, _, _, _))
       .WillByDefault(InvokeUpdateSlave(this));
-    EXPECT_CALL(*this, updateSlave(_, _, _))
+    EXPECT_CALL(*this, updateSlave(_, _, _, _))
+      .WillRepeatedly(DoDefault());
+
+    ON_CALL(*this, addResourceProvider(_, _, _))
+      .WillByDefault(InvokeAddResourceProvider(this));
+    EXPECT_CALL(*this, addResourceProvider(_, _, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, activateSlave(_))
@@ -357,7 +368,7 @@ public:
 
   virtual ~TestAllocator() {}
 
-  MOCK_METHOD4(initialize, void(
+  MOCK_METHOD6(initialize, void(
       const Duration&,
       const lambda::function<
           void(const FrameworkID&,
@@ -365,17 +376,20 @@ public:
       const lambda::function<
           void(const FrameworkID&,
                const hashmap<SlaveID, UnavailableResources>&)>&,
-      const Option<std::set<std::string>>&));
+      const Option<std::set<std::string>>&,
+      bool,
+      const Option<DomainInfo>&));
 
   MOCK_METHOD2(recover, void(
       const int expectedAgentCount,
       const hashmap<std::string, Quota>&));
 
-  MOCK_METHOD4(addFramework, void(
+  MOCK_METHOD5(addFramework, void(
       const FrameworkID&,
       const FrameworkInfo&,
       const hashmap<SlaveID, Resources>&,
-      bool active));
+      bool active,
+      const std::set<std::string>&));
 
   MOCK_METHOD1(removeFramework, void(
       const FrameworkID&));
@@ -386,9 +400,10 @@ public:
   MOCK_METHOD1(deactivateFramework, void(
       const FrameworkID&));
 
-  MOCK_METHOD2(updateFramework, void(
+  MOCK_METHOD3(updateFramework, void(
       const FrameworkID&,
-      const FrameworkInfo&));
+      const FrameworkInfo&,
+      const std::set<std::string>&));
 
   MOCK_METHOD6(addSlave, void(
       const SlaveID&,
@@ -401,10 +416,16 @@ public:
   MOCK_METHOD1(removeSlave, void(
       const SlaveID&));
 
-  MOCK_METHOD3(updateSlave, void(
+  MOCK_METHOD4(updateSlave, void(
       const SlaveID&,
+      const SlaveInfo&,
       const Option<Resources>&,
       const Option<std::vector<SlaveInfo::Capability>>&));
+
+  MOCK_METHOD3(addResourceProvider, void(
+      const SlaveID&,
+      const Resources&,
+      const hashmap<FrameworkID, Resources>&));
 
   MOCK_METHOD1(activateSlave, void(
       const SlaveID&));
@@ -423,7 +444,7 @@ public:
       const FrameworkID&,
       const SlaveID&,
       const Resources&,
-      const std::vector<Offer::Operation>&));
+      const std::vector<ResourceConversion>&));
 
   MOCK_METHOD2(updateAvailable, process::Future<Nothing>(
       const SlaveID&,
@@ -453,11 +474,11 @@ public:
 
   MOCK_METHOD2(suppressOffers, void(
       const FrameworkID&,
-      const Option<std::string>&));
+      const std::set<std::string>&));
 
   MOCK_METHOD2(reviveOffers, void(
       const FrameworkID&,
-      const Option<std::string>&));
+      const std::set<std::string>&));
 
   MOCK_METHOD2(setQuota, void(
       const std::string&,

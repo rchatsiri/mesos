@@ -32,6 +32,8 @@
 #include <stout/try.hpp>
 #include <stout/windows.hpp>
 
+#include <stout/internal/windows/longpath.hpp>
+
 using std::array;
 using std::string;
 
@@ -124,8 +126,8 @@ static Try<HANDLE> createIoPath(const string& path, DWORD accessFlags)
   // the documentation is not clear about whether `FILE_SHARE_WRITE` also
   // ensures we don't take a read lock out.
   SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
-  const HANDLE handle = ::CreateFile(
-      path.c_str(),
+  const HANDLE handle = ::CreateFileW(
+      ::internal::windows::longpath(path).data(),
       accessFlags,
       FILE_SHARE_READ | FILE_SHARE_WRITE,
       &sa,
@@ -161,7 +163,7 @@ static Try<HANDLE> createOutputFile(const string& path)
 }  // namespace internal {
 
 // Opens an inheritable pipe[1] represented as a pair of file handles. On
-// success, the first handle returned recieves the 'read' handle of the pipe,
+// success, the first handle returned receives the 'read' handle of the pipe,
 // while the second receives the 'write' handle. The pipe handles can then be
 // passed to a child process, as exemplified in [2].
 //

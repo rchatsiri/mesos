@@ -5,9 +5,6 @@ layout: documentation
 
 # Operator HTTP API
 
-Mesos 1.0.0 added **experimental** support for v1 Operator HTTP API.
-
-
 ## Overview
 
 Both masters and agents provide the `/api/v1` endpoint as the base URL for performing operator-related operations.
@@ -40,7 +37,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  “type”: “GET_HEALTH”
+  "type": "GET_HEALTH"
 }
 
 
@@ -73,7 +70,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  “type”: “GET_FLAGS”
+  "type": "GET_FLAGS"
 }
 
 
@@ -255,7 +252,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  “type”: “GET_VERSION”
+  "type": "GET_VERSION"
 }
 
 
@@ -266,9 +263,9 @@ HTTP/1.1 200 OK
 Content-Type: application/json
 
 {
-  “type”: GET_VERSION,
-  “get_version”: {
-    “version_info”: {
+  "type": "GET_VERSION",
+  "get_version": {
+    "version_info": {
       "version": "1.0.0",
       "build_date": "2016-06-24 23:18:37",
       "build_time": 1466810317,
@@ -282,7 +279,7 @@ Content-Type: application/json
 ### GET_METRICS
 
 This call gives the snapshot of current metrics to the end user. If `timeout` is
-set in the call, it would be used to determine the maximum amount of time the
+set in the call, it will be used to determine the maximum amount of time the
 API will take to respond. If the timeout is exceeded, some metrics may not be
 included in the response.
 
@@ -887,8 +884,8 @@ Content-Type: application/json
 
 ### READ_FILE
 
-Reads data from a file. This call takes path of the file to be read in the
-master, offset to start reading position and length for the maximum number of
+Reads data from a file on the master. This call takes the path of the
+file to be read, the offset to start reading, and the maximum number of
 bytes to read.
 
 ```
@@ -1358,7 +1355,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  “type”: “GET_FRAMEWORKS”
+  "type": "GET_FRAMEWORKS"
 }
 
 
@@ -1369,7 +1366,7 @@ HTTP/1.1 200 OK
 Content-Type: application/json
 
 {
-  “type”: “GET_FRAMEWORKS”,
+  "type": "GET_FRAMEWORKS",
   "get_frameworks": {
     "frameworks": [
       {
@@ -1414,7 +1411,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  “type”: “GET_EXECUTORS”
+  "type": "GET_EXECUTORS"
 }
 
 
@@ -1425,7 +1422,7 @@ HTTP/1.1 200 OK
 Content-Type: application/json
 
 {
-  “type”: “GET_EXECUTORS”,
+  "type": "GET_EXECUTORS",
   "get_executors": {
     "executors": [
       {
@@ -1670,7 +1667,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  “type”: “GET_WEIGHTS”
+  "type": "GET_WEIGHTS"
 }
 
 
@@ -1681,7 +1678,7 @@ HTTP/1.1 200 OK
 Content-Type: application/json
 
 {
-  “type”: “GET_WEIGHTS”,
+  "type": "GET_WEIGHTS",
   "get_weights": {
     "weight_infos": [
       {
@@ -1729,7 +1726,7 @@ HTTP/1.1 202 Accepted
 
 ### GET_MASTER
 
-This call retrieves the information on master.
+This call retrieves information about the master.
 
 ```
 GET_MASTER HTTP Request (JSON):
@@ -2324,6 +2321,41 @@ HTTP/1.1 202 Accepted
 
 ```
 
+### MARK_AGENT_GONE
+
+This call can be used by operators to assert that an agent instance has
+failed and is never coming back (e.g., ephemeral instance from cloud provider).
+The master would shutdown the agent and send `TASK_GONE_BY_OPERATOR` updates
+for all the running tasks. This signal can be used by stateful frameworks to
+re-schedule their workloads (volumes, reservations etc.) to other agent
+instances. It is possible that the tasks might still be running if the
+operator's assertion was wrong and the agent was partitioned away from
+the master. The agent would be shutdown when it tries to re-register with the
+master when the partition heals. This call is idempotent.
+
+```
+MARK_AGENT_GONE HTTP Request (JSON):
+
+POST /api/v1  HTTP/1.1
+
+Host: masterhost:5050
+Content-Type: application/json
+Accept: application/json
+
+{
+  "type": "MARK_AGENT_GONE",
+  "mark_agent_gone": {
+    "agent_id": {
+      "value": "3192b9d1-db71-4699-ae25-e28dfbf42de1"
+    }
+  }
+}
+
+MARK_AGENT_GONE HTTP Response (JSON):
+
+HTTP/1.1 200 OK
+```
+
 ## Events
 
 Currently, the only call that results in a streaming response is the `SUBSCRIBE` call sent to the master API.
@@ -2365,6 +2397,19 @@ The following events are currently sent by the master. The canonical source of t
 ### SUBSCRIBED
 
 The first event sent by the master when a client sends a `SUBSCRIBE` request on the persistent connection. This includes a snapshot of the cluster state. See `SUBSCRIBE` above for details. Subsequent changes to the cluster state can result in more events (currently only `TASK_ADDED` and `TASK_UPDATED` are supported).
+
+### HEARTBEAT
+
+Periodically sent by the master to the subscriber according to 'Subscribed.heartbeat_interval_seconds'. If the subscriber does not receive any events (including heartbeats) for an extended period of time (e.g., 5 x heartbeat_interval_seconds), it is likely that the connection is lost or there is a network partition. In that case, the subscriber should close the existing subscription connection and resubscribe using a backoff strategy.
+
+```
+HEARTBEAT Event (JSON)
+
+<event-length>
+{
+  "type": "HEARTBEAT",
+}
+```
 
 ### TASK_ADDED
 
@@ -2430,6 +2475,192 @@ TASK_UPDATED Event (JSON)
 }
 ```
 
+### FRAMEWORK_ADDED
+
+Sent whenever a framework becomes known to the master. This can happen when a new framework registers with the master.
+
+```
+FRAMEWORK_ADDED Event (JSON)
+
+<event-length>
+{
+  "type": "FRAMEWORK_ADDED",
+
+  "framework_added": {
+    "framework": {
+      "active": true,
+      "allocated_resources": [],
+      "connected": true,
+      "framework_info": {
+        "capabilities": [
+          {
+            "type": "RESERVATION_REFINEMENT"
+          }
+        ],
+        "checkpoint": true,
+        "failover_timeout": 0,
+        "id": {
+          "value": "a9ba2984-99c4-4183-8cd1-f7313426e21c-0147"
+        },
+        "name": "inverse-offer-example-framework",
+        "role": "*",
+        "user": "root"
+      },
+      "inverse_offers": [],
+      "recovered": false,
+      "registered_time": {
+        "nanoseconds": 1501191957829317120
+      },
+      "reregistered_time": {
+        "nanoseconds": 1501191957829317120
+      }
+    }
+  }
+}
+```
+
+### FRAMEWORK_UPDATED
+
+Sent whenever a framework re-registers with the master upon a disconnection (network error) or upon a master failover.
+
+```
+FRAMEWORK_UPDATED Event (JSON)
+
+<event-length>
+{
+  "type": "FRAMEWORK_UPDATED",
+
+  "framework_updated": {
+    "framework": {
+      "active": true,
+      "allocated_resources": [],
+      "connected": true,
+      "framework_info": {
+        "capabilities": [
+          {
+            "type": "RESERVATION_REFINEMENT"
+          }
+        ],
+        "checkpoint": true,
+        "failover_timeout": 0,
+        "id": {
+          "value": "a9ba2984-99c4-4183-8cd1-f7313426e21c-0147"
+        },
+        "name": "inverse-offer-example-framework",
+        "role": "*",
+        "user": "root"
+      },
+      "inverse_offers": [],
+      "recovered": false,
+      "registered_time": {
+        "nanoseconds": 1501191957829317120
+      },
+      "reregistered_time": {
+        "nanoseconds": 1501191957829317120
+      }
+    }
+  }
+}
+```
+
+### FRAMEWORK_REMOVED
+
+Sent whenever a framework is removed. This can happen when a framework is explicitly teardown by the operator or if it fails to re-register with the master within the failover timeout.
+
+```
+FRAMEWORK_REMOVED Event (JSON)
+
+<event-length>
+{
+  "type": "FRAMEWORK_REMOVED",
+
+  "framework_removed": {
+    "framework_info": {
+      "capabilities": [
+        {
+          "type": "RESERVATION_REFINEMENT"
+        }
+      ],
+      "checkpoint": true,
+      "failover_timeout": 0,
+      "id": {
+        "value": "a9ba2984-99c4-4183-8cd1-f7313426e21c-0147"
+      },
+      "name": "inverse-offer-example-framework",
+      "role": "*",
+      "user": "root"
+    }
+  }
+}
+```
+
+### AGENT_ADDED
+
+Sent whenever an agent becomes known to it. This can happen when an agent registered for the first time, or reregistered after a master failover.
+
+```
+AGENT_ADDED Event (JSON)
+
+<event-length>
+{
+  "type": "AGENT_ADDED",
+
+  "agent_added": {
+    "agent": {
+      "active": true,
+      "agent_info": {
+        "hostname": "172.31.2.24",
+        "id": {
+          "value": "c3946a13-75b4-4d3c-9d0e-fc10038dca85-S3"
+        },
+        "port": 5051,
+        "resources": [],
+      },
+      "allocated_resources": [],
+      "capabilities": [
+        {
+          "type": "MULTI_ROLE"
+        },
+        {
+          "type": "HIERARCHICAL_ROLE"
+        },
+        {
+          "type": "RESERVATION_REFINEMENT"
+        }
+      ],
+      "offered_resources": [],
+      "pid": "slave(1)@172.31.2.24:5051",
+      "registered_time": {
+        "nanoseconds": 1500993262264135000
+      },
+      "reregistered_time": {
+        "nanoseconds": 1500993263019321000
+      },
+      "total_resources": [],
+      "version": "1.4.0"
+    }
+  }
+}
+```
+
+### AGENT_REMOVED
+
+Sent whenever a agent is removed. This can happen when the agent is scheduled for maintenance. (NOTE: It's possible that an agent might become active once it has been removed, i.e. if the master has gc'ed its list of known "dead" agents. See MESOS-5965 for context).
+
+```
+AGENT_REMOVED Event (JSON)
+
+<event-length>
+{
+  "type": "AGENT_REMOVED",
+
+  "agent_removed": {
+    "agent_id": {
+      "value": "c3946a13-75b4-4d3c-9d0e-fc10038dca85-S3"
+    }
+  }
+}
+```
 
 ## Agent API
 
@@ -2457,7 +2688,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  “type”: "GET_FLAGS"
+  "type": "GET_FLAGS"
 }
 
 
@@ -2768,7 +2999,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  “type”: “GET_STATE”
+  "type": "GET_STATE"
 }
 
 
@@ -2938,6 +3169,11 @@ Content-Type: application/json
 This call retrieves information about containers running on this agent. It contains
 ContainerStatus and ResourceStatistics along with some metadata of the containers.
 
+There are two knobs in the request to control the types of the containers this
+API will return:
+* `show_nested`: Whether to show nested containers [default: false].
+* `show_standalone`: Whether to show standalone containers [default: false].
+
 ```
 GET_CONTAINERS HTTP Request (JSON):
 
@@ -2948,7 +3184,11 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  “type”: “GET_CONTAINERS”
+  "type": "GET_CONTAINERS",
+  "get_containers": {
+    "show_nested": true,
+    "show_standalone": false
+  }
 }
 
 
@@ -3009,7 +3249,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  “type”: "GET_FRAMEWORKS"
+  "type": "GET_FRAMEWORKS"
 }
 
 
@@ -3057,7 +3297,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  “type”: "GET_EXECUTORS"
+  "type": "GET_EXECUTORS"
 }
 
 
@@ -3129,7 +3369,7 @@ Content-Type: application/json
 Accept: application/json
 
 {
- “type”: "GET_TASKS"
+  "type": "GET_TASKS"
 }
 
 
@@ -3140,7 +3380,7 @@ HTTP/1.1 200 OK
 Content-Type: application/json
 
 {
-  “type”: “GET_TASKS”,
+  "type": "GET_TASKS",
   "get_tasks": {
     "launched_tasks": [
       {

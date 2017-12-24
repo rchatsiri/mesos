@@ -50,7 +50,7 @@ namespace internal {
 namespace tests {
 
 
-static const string NAME_PREFIX="mesos-docker";
+static const string NAME_PREFIX = "mesos-docker";
 
 
 class DockerTest : public MesosTest
@@ -98,7 +98,7 @@ protected:
 
 
 // This test tests the functionality of the docker's interfaces.
-TEST_F(DockerTest, ROOT_DOCKER_interface)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerTest, ROOT_DOCKER_interface)
 {
   const string containerName = NAME_PREFIX + "-test";
   Resources resources = Resources::parse("cpus:1;mem:512").get();
@@ -265,7 +265,7 @@ TEST_F(DockerTest, ROOT_DOCKER_interface)
 
 
 // This tests our 'docker kill' wrapper.
-TEST_F(DockerTest, ROOT_DOCKER_kill)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerTest, ROOT_DOCKER_kill)
 {
   const string containerName = NAME_PREFIX + "-test";
   Resources resources = Resources::parse("cpus:1;mem:512").get();
@@ -344,11 +344,19 @@ TEST_F(DockerTest, ROOT_DOCKER_Version)
       false);
   ASSERT_SOME(docker);
 
-  AWAIT_EXPECT_EQ(Version(1, 7, 1), docker.get()->version());
+  AWAIT_EXPECT_EQ(Version(1, 7, 1, {"fc22"}), docker.get()->version());
+
+  docker = Docker::create(
+      "echo Docker version 17.05.0-ce, build 89658bed64",
+      tests::flags.docker_socket,
+      false);
+  ASSERT_SOME(docker);
+
+  AWAIT_EXPECT_EQ(Version(17, 05, 0, {"ce"}), docker.get()->version());
 }
 
 
-TEST_F(DockerTest, ROOT_DOCKER_CheckCommandWithShell)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerTest, ROOT_DOCKER_CheckCommandWithShell)
 {
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,
@@ -376,7 +384,7 @@ TEST_F(DockerTest, ROOT_DOCKER_CheckCommandWithShell)
 }
 
 
-TEST_F(DockerTest, ROOT_DOCKER_CheckPortResource)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerTest, ROOT_DOCKER_CheckPortResource)
 {
   const string containerName = NAME_PREFIX + "-port-resource-test";
 
@@ -442,7 +450,7 @@ TEST_F(DockerTest, ROOT_DOCKER_CheckPortResource)
 }
 
 
-TEST_F(DockerTest, ROOT_DOCKER_CancelPull)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerTest, ROOT_DOCKER_CancelPull)
 {
   // Delete the test image if it exists.
 
@@ -478,7 +486,7 @@ TEST_F(DockerTest, ROOT_DOCKER_CancelPull)
 
 // This test verifies mounting in a relative host path when running a
 // docker container works.
-TEST_F(DockerTest, ROOT_DOCKER_MountRelativeHostPath)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerTest, ROOT_DOCKER_MountRelativeHostPath)
 {
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,
@@ -523,7 +531,7 @@ TEST_F(DockerTest, ROOT_DOCKER_MountRelativeHostPath)
 
 // This test verifies mounting in an absolute host path when running a
 // docker container works.
-TEST_F(DockerTest, ROOT_DOCKER_MountAbsoluteHostPath)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerTest, ROOT_DOCKER_MountAbsoluteHostPath)
 {
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,
@@ -570,7 +578,8 @@ TEST_F(DockerTest, ROOT_DOCKER_MountAbsoluteHostPath)
 // This test verifies mounting in an absolute host path to
 // a relative container path when running a docker container
 // works.
-TEST_F(DockerTest, ROOT_DOCKER_MountRelativeContainerPath)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+  DockerTest, ROOT_DOCKER_MountRelativeContainerPath)
 {
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,
@@ -617,7 +626,8 @@ TEST_F(DockerTest, ROOT_DOCKER_MountRelativeContainerPath)
 
 // This test verifies a docker container mounting relative host
 // path to a relative container path fails.
-TEST_F(DockerTest, ROOT_DOCKER_MountRelativeHostPathRelativeContainerPath)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+  DockerTest, ROOT_DOCKER_MountRelativeHostPathRelativeContainerPath)
 {
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,
@@ -663,7 +673,7 @@ class DockerImageTest : public MesosTest {};
 
 // This test verifies that docker image constructor is able to read
 // entrypoint and environment from a docker inspect JSON object.
-TEST_F(DockerImageTest, ParseInspectonImage)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerImageTest, ParseInspectonImage)
 {
   JSON::Value inspect = JSON::parse(
     "{"
@@ -781,7 +791,7 @@ TEST_F(DockerImageTest, ParseInspectonImage)
 // /dev/nvidiactl device (present alongside Nvidia GPUs).
 //
 // TODO(bmahler): Avoid needing Nvidia GPUs to test this.
-TEST_F(DockerTest, ROOT_DOCKER_NVIDIA_GPU_DeviceAllow)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerTest, ROOT_DOCKER_NVIDIA_GPU_DeviceAllow)
 {
   const string containerName = NAME_PREFIX + "-test";
   Resources resources = Resources::parse("cpus:1;mem:512;gpus:1").get();
@@ -839,7 +849,8 @@ TEST_F(DockerTest, ROOT_DOCKER_NVIDIA_GPU_DeviceAllow)
 //
 // TODO(bmahler): Avoid needing Nvidia GPUs to test this and
 // merge this into a more general inspect test.
-TEST_F(DockerTest, ROOT_DOCKER_NVIDIA_GPU_InspectDevices)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+  DockerTest, ROOT_DOCKER_NVIDIA_GPU_InspectDevices)
 {
   const string containerName = NAME_PREFIX + "-test";
   Resources resources = Resources::parse("cpus:1;mem:512;gpus:1").get();
@@ -910,7 +921,8 @@ TEST_F(DockerTest, ROOT_DOCKER_NVIDIA_GPU_InspectDevices)
 
 // This tests verifies that a task requiring more than one volume driver (in
 // multiple Volumes) is rejected.
-TEST_F(DockerTest, ROOT_DOCKER_ConflictingVolumeDriversInMultipleVolumes)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+  DockerTest, ROOT_DOCKER_ConflictingVolumeDriversInMultipleVolumes)
 {
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,
@@ -947,7 +959,8 @@ TEST_F(DockerTest, ROOT_DOCKER_ConflictingVolumeDriversInMultipleVolumes)
 // This tests verifies that a task requiring more than one volume driver (via
 // Volume.Source.DockerInfo.driver and ContainerInfo.DockerInfo.volume_driver)
 // is rejected.
-TEST_F(DockerTest, ROOT_DOCKER_ConflictingVolumeDrivers)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+  DockerTest, ROOT_DOCKER_ConflictingVolumeDrivers)
 {
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,

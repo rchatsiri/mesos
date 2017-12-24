@@ -100,7 +100,7 @@ CombinedAuthenticatorProcess::CombinedAuthenticatorProcess(
     const string& _realm,
     vector<Owned<Authenticator>>&& _authenticators)
   : ProcessBase(process::ID::generate("__combined_authenticator__")),
-    authenticators(_authenticators),
+    authenticators(std::move(_authenticators)),
     realm(_realm) {}
 
 
@@ -265,7 +265,7 @@ Future<AuthenticationResult> CombinedAuthenticatorProcess::authenticate(
     const Request& request)
 {
   // Variables to hold the state of the authentication loop.
-  auto authenticator = authenticators.begin();
+  auto iter = authenticators.begin();
   auto end = authenticators.end();
   // Each pair contains a string representing the scheme of the authenticator
   // and a `Try<AuthenticationResult>` which is used to capture failure messages
@@ -277,21 +277,31 @@ Future<AuthenticationResult> CombinedAuthenticatorProcess::authenticate(
   // Loop over all installed authenticators.
   return loop(
       self(),
-      [authenticator]() mutable {
-        return authenticator++;
+      [iter, end]() mutable {
+        return iter == end ? Option<Owned<Authenticator>>::none() : *(iter++);
       },
-      [request, results, end, self_](
-          vector<Owned<Authenticator>>::const_iterator authenticator) mutable
+      [request, results, self_](
+          const Option<Owned<Authenticator>>& authenticator) mutable
               -> Future<ControlFlow<AuthenticationResult>> {
         // All authentication attempts have failed. Combine them and return.
-        if (authenticator == end) {
+        if (authenticator.isNone()) {
           return combineFailed(results);
         }
 
-        return authenticator->get()->authenticate(request)
+        // Instead of capturing `authenticator` we capture the scheme by copy,
+        // since that's all we need. This avoids an issue during teardown of the
+        // authenticator: if the `CombinedAuthenticator` is destroyed before the
+        // callback below executes, the `authenticator` reference here could be
+        // the last remaining reference to that authenticator. Capturing this
+        // reference could cause the authenticator's destructor to be called
+        // from within its own context when the callback completes, leading to a
+        // deadlock. See MESOS-7065.
+        const string scheme = authenticator.get()->scheme();
+
+        return authenticator.get()->authenticate(request)
           .then(defer(
               self_,
-              [&results, authenticator](const AuthenticationResult& result)
+              [&results, scheme](const AuthenticationResult& result)
                   -> ControlFlow<AuthenticationResult> {
                 // Validate that exactly 1 member is set.
                 size_t count =
@@ -300,8 +310,7 @@ Future<AuthenticationResult> CombinedAuthenticatorProcess::authenticate(
                   (result.forbidden.isSome()    ? 1 : 0);
 
                 if (count != 1) {
-                  LOG(WARNING) << "HTTP authenticator for scheme '"
-                               << authenticator->get()->scheme()
+                  LOG(WARNING) << "HTTP authenticator for scheme '" << scheme
                                << "' returned a result with " << count
                                << " members set, which is an error";
                   return Continue();
@@ -313,17 +322,13 @@ Future<AuthenticationResult> CombinedAuthenticatorProcess::authenticate(
                 }
 
                 // Authentication unsuccessful; append the result and continue.
-                results.push_back(make_pair(
-                    authenticator->get()->scheme(),
-                    result));
+                results.push_back(make_pair(scheme, result));
                 return Continue();
               }))
-          .repair([&results, authenticator](
+          .repair([&results, scheme](
               const Future<ControlFlow<AuthenticationResult>>& failedResult)
                   -> ControlFlow<AuthenticationResult> {
-            results.push_back(make_pair(
-                authenticator->get()->scheme(),
-                Error(failedResult.failure())));
+            results.push_back(make_pair(scheme, Error(failedResult.failure())));
             return Continue();
           });
       });

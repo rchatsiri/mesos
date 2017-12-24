@@ -1,3 +1,19 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 (function() {
   'use strict';
 
@@ -11,10 +27,46 @@
     return false;
   }
 
-  // Invokes the pailer for the specified host and path using the
-  // specified window_title.
-  function pailer(host, path, window_title) {
-    var url = '//' + host + '/files/read?path=' + path;
+  // Returns the URL prefix for an agent, there are two cases
+  // to consider:
+  //
+  //   (1) Some endpoints for the agent process itself require
+  //       the agent PID.name (processId) in the path, this is
+  //       to ensure that the webui works correctly when running
+  //       against mesos-local or other instances of multiple agents
+  //       running within the same "host:port":
+  //
+  //         //hostname:port/slave(1)
+  //         //hostname:port/slave(2)
+  //         ...
+  //
+  //   (2) Some endpoints for other components in the agent
+  //       do not require the agent PID.name in the path, since
+  //       a single endpoint serves multiple agents within the
+  //       same process. In this case we just return:
+  //
+  //         //hostname:port
+  //
+  // Note that there are some clashing issues in mesos-local
+  // (e.g., hosting '/slave/log' for each agent log, we don't
+  // namespace metrics within '/metrics/snapshot', etc).
+  function agentURLPrefix(agent, includeProcessId) {
+    var port = agent.pid.substring(agent.pid.lastIndexOf(':') + 1);
+    var processId = agent.pid.substring(0, agent.pid.indexOf('@'));
+
+    var url = '//' + agent.hostname + ':' + port;
+
+    if (includeProcessId) {
+      url += '/' + processId;
+    }
+
+    return url;
+  }
+
+  // Invokes the pailer, building the endpoint URL with the specified urlPrefix
+  // and path.
+  function pailer(urlPrefix, path, window_title) {
+    var url = urlPrefix + '/files/read?path=' + path;
 
     // The randomized `storageKey` is removed from `localStorage` once the
     // pailer window loads the URL into its `sessionStorage`, therefore
@@ -26,12 +78,12 @@
     localStorage.setItem(storageKey, url);
 
     var pailer =
-      window.open('/static/pailer.html', storageKey, 'width=580px, height=700px');
+      window.open('static/pailer.html', storageKey, 'width=580px, height=700px');
 
     // Need to use window.onload instead of document.ready to make
     // sure the title doesn't get overwritten.
     pailer.onload = function() {
-      pailer.document.title = window_title + ' (' + host + ')';
+      pailer.document.title = window_title;
     };
   }
 
@@ -69,7 +121,7 @@
           task.directory = executor.directory + '/tasks/' + task.id;
         } else {
           task.directory = executor.directory;
-        };
+        }
       });
     });
   }
@@ -115,7 +167,6 @@
     $scope.active_tasks = [];
     $scope.unreachable_tasks = [];
     $scope.completed_tasks = [];
-    $scope.orphan_tasks = [];
 
     // Update the stats.
     $scope.cluster = $scope.state.cluster;
@@ -157,6 +208,7 @@
           if (isStateTerminal(task.state)) {
               task.finish_time = lastStatus.timestamp * 1000;
           }
+          task.healthy = lastStatus.healthy;
       }
     };
 
@@ -231,6 +283,38 @@
       _.each(framework.unreachable_tasks, setTaskMetadata);
       _.each(framework.completed_tasks, setTaskMetadata);
 
+      // TODO(bmahler): Add per-framework metrics to the master so that
+      // the webui does not need to loop over all tasks!
+      framework.running_tasks = 0;
+      framework.staging_tasks = 0;
+      framework.starting_tasks = 0;
+      framework.killing_tasks = 0;
+
+      _.each(framework.tasks, function(task) {
+        switch (task.state) {
+            case "TASK_STAGING": framework.staging_tasks += 1; break;
+            case "TASK_STARTING": framework.starting_tasks += 1; break;
+            case "TASK_RUNNING": framework.running_tasks += 1; break;
+            case "TASK_KILLING": framework.killing_tasks += 1; break;
+            default: break;
+        }
+      })
+
+      framework.finished_tasks = 0;
+      framework.killed_tasks = 0;
+      framework.failed_tasks = 0;
+      framework.lost_tasks = 0;
+
+      _.each(framework.completed_tasks, function(task) {
+        switch (task.state) {
+            case "TASK_FINISHED": framework.finished_tasks += 1; break;
+            case "TASK_KILLED": framework.killed_tasks += 1; break;
+            case "TASK_FAILED": framework.failed_tasks += 1; break;
+            case "TASK_LOST": framework.lost_tasks += 1; break;
+            default: break;
+        }
+      })
+
       $scope.active_tasks = $scope.active_tasks.concat(framework.tasks);
       $scope.unreachable_tasks = $scope.unreachable_tasks.concat(framework.unreachable_tasks);
       $scope.completed_tasks =
@@ -247,9 +331,6 @@
 
       _.each(framework.completed_tasks, setTaskMetadata);
     });
-
-    $scope.orphan_tasks = $scope.state.orphan_tasks;
-    _.each($scope.orphan_tasks, setTaskMetadata);
 
     $scope.used_cpus -= $scope.offered_cpus;
     $scope.used_gpus -= $scope.offered_gpus;
@@ -329,6 +410,10 @@
       {
         pathRegexp: /^\/frameworks/,
         tab: 'frameworks'
+      },
+      {
+        pathRegexp: /^\/roles/,
+        tab: 'roles'
       },
       {
         pathRegexp: /^\/offers/,
@@ -465,7 +550,7 @@
 
 
   mesosApp.controller('HomeCtrl', function($dialog, $scope) {
-    $scope.log = function($event) {
+    $scope.log = function(_$event) {
       if (!$scope.state.external_log_file && !$scope.state.log_dir) {
         $dialog.messageBox(
           'Logging to a file is not enabled',
@@ -474,14 +559,37 @@
         ).open();
       } else {
         pailer(
-            $scope.$location.host() + ':' + $scope.$location.port(),
+            '//' + $scope.$location.host() + ':' + $scope.$location.port(),
             '/master/log',
-            'Mesos Master');
+            'Mesos Master (' + $scope.$location.host() + ':' + $scope.$location.port() + ')');
       }
     };
   });
 
   mesosApp.controller('FrameworksCtrl', function() {});
+
+  mesosApp.controller('RolesCtrl', function($scope, $http) {
+    var update = function() {
+      // TODO(haosdent): Send requests to the leading master directly
+      // once `leadingMasterURL` is public.
+      $http.jsonp('master/roles?jsonp=JSON_CALLBACK')
+      .success(function(response) {
+        $scope.roles = response;
+      })
+      .error(function() {
+        if ($scope.isErrorModalOpen === false) {
+          popupErrorModal();
+        }
+      });
+    };
+
+    if ($scope.state) {
+      update();
+    }
+
+    var removeListener = $scope.$on('state_updated', update);
+    $scope.$on('$routeChangeStart', removeListener);
+  });
 
   mesosApp.controller('OffersCtrl', function() {});
 
@@ -489,7 +597,7 @@
     var update = function() {
       // TODO(haosdent): Send requests to the leading master directly
       // once `leadingMasterURL` is public.
-      $http.jsonp('/master/maintenance/schedule?jsonp=JSON_CALLBACK')
+      $http.jsonp('master/maintenance/schedule?jsonp=JSON_CALLBACK')
       .success(function(response) {
         $scope.maintenance = response;
       })
@@ -548,12 +656,9 @@
         return;
       }
 
-      var pid = $scope.agents[$routeParams.agent_id].pid;
-      var hostname = $scope.agents[$routeParams.agent_id].hostname;
-      var id = pid.substring(0, pid.indexOf('@'));
-      var host = hostname + ":" + pid.substring(pid.lastIndexOf(':') + 1);
+      var agent = $scope.agents[$routeParams.agent_id];
 
-      $scope.log = function($event) {
+      $scope.log = function(_$event) {
         if (!$scope.state.external_log_file && !$scope.state.log_dir) {
           $dialog.messageBox(
             'Logging to a file is not enabled',
@@ -561,22 +666,34 @@
             [{label: 'Continue'}]
           ).open();
         } else {
-          pailer(host, '/slave/log', 'Mesos Agent');
+          pailer(agentURLPrefix(agent, false), '/slave/log', 'Mesos Agent (' + agent.id + ')');
         }
       };
 
+
       // Set up polling for the monitor if this is the first update.
       if (!$top.started()) {
-        $top.start(host, id, $scope);
+        $top.start(
+          agentURLPrefix(agent, true) + '/monitor/statistics?jsonp=JSON_CALLBACK',
+          $scope
+        );
       }
 
-      $http.jsonp('//' + host + '/' + id + '/state?jsonp=JSON_CALLBACK')
+      $http.jsonp(agentURLPrefix(agent, true) + '/state?jsonp=JSON_CALLBACK')
         .success(function (response) {
           $scope.state = response;
 
           $scope.agent = {};
           $scope.agent.frameworks = {};
           $scope.agent.completed_frameworks = {};
+
+          // Convert the reserved resources map into an array for inclusion
+          // in an `ng-repeat` table.
+          $scope.agent.reserved_resources_as_array = _($scope.state.reserved_resources)
+            .map(function(reservation, role) {
+              reservation.role = role;
+              return reservation;
+            });
 
           // Computes framework stats by setting new attributes on the 'framework'
           // object.
@@ -618,6 +735,21 @@
             }
           });
 
+          $scope.state.allocated_resources = {};
+          $scope.state.allocated_resources.cpus = 0;
+          $scope.state.allocated_resources.gpus = 0;
+          $scope.state.allocated_resources.mem = 0;
+          $scope.state.allocated_resources.disk = 0;
+
+          // Currently the agent does not expose the total allocated
+          // resources across all frameworks, so we sum manually.
+          _.each($scope.state.frameworks, function(framework) {
+            $scope.state.allocated_resources.cpus += framework.cpus;
+            $scope.state.allocated_resources.gpus += framework.gpus;
+            $scope.state.allocated_resources.mem += framework.mem;
+            $scope.state.allocated_resources.disk += framework.disk;
+          });
+
           $('#agent').show();
         })
         .error(function(reason) {
@@ -625,7 +757,7 @@
           $('#alert').show();
         });
 
-      $http.jsonp('//' + host + '/metrics/snapshot?jsonp=JSON_CALLBACK')
+      $http.jsonp(agentURLPrefix(agent, false) + '/metrics/snapshot?jsonp=JSON_CALLBACK')
         .success(function (response) {
           $scope.staging_tasks = response['slave/tasks_staging'];
           $scope.starting_tasks = response['slave/tasks_starting'];
@@ -664,17 +796,17 @@
         return;
       }
 
-      var pid = $scope.agents[$routeParams.agent_id].pid;
-      var hostname = $scope.agents[$routeParams.agent_id].hostname;
-      var id = pid.substring(0, pid.indexOf('@'));
-      var host = hostname + ":" + pid.substring(pid.lastIndexOf(':') + 1);
+      var agent = $scope.agents[$routeParams.agent_id];
 
       // Set up polling for the monitor if this is the first update.
       if (!$top.started()) {
-        $top.start(host, id, $scope);
+        $top.start(
+          agentURLPrefix(agent, true) + '/monitor/statistics?jsonp=JSON_CALLBACK',
+          $scope
+        );
       }
 
-      $http.jsonp('//' + host + '/' + id + '/state?jsonp=JSON_CALLBACK')
+      $http.jsonp(agentURLPrefix(agent, true) + '/state?jsonp=JSON_CALLBACK')
         .success(function (response) {
           $scope.state = response;
 
@@ -751,17 +883,17 @@
         return;
       }
 
-      var pid = $scope.agents[$routeParams.agent_id].pid;
-      var hostname = $scope.agents[$routeParams.agent_id].hostname;
-      var id = pid.substring(0, pid.indexOf('@'));
-      var host = hostname + ":" + pid.substring(pid.lastIndexOf(':') + 1);
+      var agent = $scope.agents[$routeParams.agent_id];
 
       // Set up polling for the monitor if this is the first update.
       if (!$top.started()) {
-        $top.start(host, id, $scope);
+        $top.start(
+          agentURLPrefix(agent, true) + '/monitor/statistics?jsonp=JSON_CALLBACK',
+          $scope
+        );
       }
 
-      $http.jsonp('//' + host + '/' + id + '/state?jsonp=JSON_CALLBACK')
+      $http.jsonp(agentURLPrefix(agent, true) + '/state?jsonp=JSON_CALLBACK')
         .success(function (response) {
           $scope.state = response;
 
@@ -786,6 +918,21 @@
             return $scope.executor_id === executor.id;
           }
 
+          function setRole(tasks) {
+            _.each(tasks, function(task) {
+              task.role = $scope.framework.role;
+            });
+          }
+
+          function setHealth(tasks) {
+            _.each(tasks, function(task) {
+              var lastStatus = _.last(task.statuses);
+              if (lastStatus) {
+                task.healthy = lastStatus.healthy;
+              }
+            })
+          }
+
           // Look for the executor; it's either active or completed.
           $scope.executor =
             _.find($scope.framework.executors, matchExecutor) ||
@@ -803,17 +950,12 @@
           if (!("role" in $scope.executor)) {
             $scope.executor.role = $scope.framework.role;
 
-            function setRole(tasks) {
-              _.each(tasks, function(task) {
-                task.role = $scope.framework.role;
-              });
-            }
-
             setRole($scope.executor.tasks);
             setRole($scope.executor.queued_tasks);
             setRole($scope.executor.completed_tasks);
           }
 
+          setHealth($scope.executor.tasks);
           setTaskSandbox($scope.executor);
 
           $('#agent').show();
@@ -861,116 +1003,114 @@
       }
     }
 
-    // When navigating directly to this page, e.g. pasting the URL into the
-    // browser, the previous page is not a page in Mesos. In that case, navigate
-    // home.
-    if (!$scope.agents) {
-      $alert.danger({
-        message: "Navigate to the agent's sandbox via the Mesos UI.",
-        title: "Failed to find agents."
-      });
-      return $location.path('/').replace();
-    }
+    var reroute = function() {
+      var agent = $scope.agents[$routeParams.agent_id];
 
-    var agent = $scope.agents[$routeParams.agent_id];
+      // If the agent doesn't exist, send the user back.
+      if (!agent) {
+        return goBack("Agent with ID '" + $routeParams.agent_id + "' does not exist.");
+      }
 
-    // If the agent doesn't exist, send the user back.
-    if (!agent) {
-      return goBack("Agent with ID '" + $routeParams.agent_id + "' does not exist.");
-    }
+      // Request agent details to get access to the route executor's "directory"
+      // to navigate directly to the executor's sandbox.
+      var url = agentURLPrefix(agent, true) + '/state?jsonp=JSON_CALLBACK';
+      $http.jsonp(url)
+        .success(function(response) {
 
-    var pid = agent.pid;
-    var hostname = $scope.agents[$routeParams.agent_id].hostname;
-    var id = pid.substring(0, pid.indexOf('@'));
-    var port = pid.substring(pid.lastIndexOf(':') + 1);
-    var host = hostname + ":" + port;
+          function matchFramework(framework) {
+            return $routeParams.framework_id === framework.id;
+          }
 
-    // Request agent details to get access to the route executor's "directory"
-    // to navigate directly to the executor's sandbox.
-    $http.jsonp('//' + host + '/' + id + '/state?jsonp=JSON_CALLBACK')
-      .success(function(response) {
+          var framework =
+            _.find(response.frameworks, matchFramework) ||
+            _.find(response.completed_frameworks, matchFramework);
 
-        function matchFramework(framework) {
-          return $routeParams.framework_id === framework.id;
-        }
-
-        var framework =
-          _.find(response.frameworks, matchFramework) ||
-          _.find(response.completed_frameworks, matchFramework);
-
-        if (!framework) {
-          return goBack(
-            "Framework with ID '" + $routeParams.framework_id +
-              "' does not exist on agent with ID '" + $routeParams.agent_id +
-              "'."
-          );
-        }
-
-        function matchExecutor(executor) {
-          return $routeParams.executor_id === executor.id;
-        }
-
-        var executor =
-          _.find(framework.executors, matchExecutor) ||
-          _.find(framework.completed_executors, matchExecutor);
-
-        if (!executor) {
-          return goBack(
-            "Executor with ID '" + $routeParams.executor_id +
-              "' does not exist on agent with ID '" + $routeParams.agent_id +
-              "'."
-          );
-        }
-
-        var sandboxDirectory = executor.directory;
-
-        function matchTask(task) {
-          return $routeParams.task_id === task.id;
-        }
-
-        // Continue to navigate to the task's sandbox if the task id is
-        // specified in route parameters.
-        if ($routeParams.task_id) {
-          setTaskSandbox(executor);
-
-          var task =
-            _.find(executor.tasks, matchTask) ||
-            _.find(executor.queued_tasks, matchTask) ||
-            _.find(executor.completed_tasks, matchTask);
-
-          if (!task) {
+          if (!framework) {
             return goBack(
-              "Task with ID '" + $routeParams.task_id +
+              "Framework with ID '" + $routeParams.framework_id +
                 "' does not exist on agent with ID '" + $routeParams.agent_id +
                 "'."
             );
           }
 
-          sandboxDirectory = task.directory;
-        }
+          function matchExecutor(executor) {
+            return $routeParams.executor_id === executor.id;
+          }
 
-        // Navigate to a path like '/agents/:id/browse?path=%2Ftmp%2F', the
-        // recognized "browse" endpoint for an agent.
-        $location.path('/agents/' + $routeParams.agent_id + '/browse')
-          .search({path: sandboxDirectory})
-          .replace();
-      })
-      .error(function(response) {
-        $alert.danger({
-          bullets: [
-            "The agent's hostname, '" + hostname + "', is not accessible from your network",
-            "The agent's port, '" + port + "', is not accessible from your network",
-            "The agent timed out or went offline"
-          ],
-          message: "Potential reasons:",
-          title: "Failed to connect to agent '" + $routeParams.agent_id +
-            "' on '" + host + "'."
+          var executor =
+            _.find(framework.executors, matchExecutor) ||
+            _.find(framework.completed_executors, matchExecutor);
+
+          if (!executor) {
+            return goBack(
+              "Executor with ID '" + $routeParams.executor_id +
+                "' does not exist on agent with ID '" + $routeParams.agent_id +
+                "'."
+            );
+          }
+
+          var sandboxDirectory = executor.directory;
+
+          function matchTask(task) {
+            return $routeParams.task_id === task.id;
+          }
+
+          // Continue to navigate to the task's sandbox if the task id is
+          // specified in route parameters.
+          if ($routeParams.task_id) {
+            setTaskSandbox(executor);
+
+            var task =
+              _.find(executor.tasks, matchTask) ||
+              _.find(executor.queued_tasks, matchTask) ||
+              _.find(executor.completed_tasks, matchTask);
+
+            if (!task) {
+              return goBack(
+                "Task with ID '" + $routeParams.task_id +
+                  "' does not exist on agent with ID '" + $routeParams.agent_id +
+                  "'."
+              );
+            }
+
+            sandboxDirectory = task.directory;
+          }
+
+          // Navigate to a path like '/agents/:id/browse?path=%2Ftmp%2F', the
+          // recognized "browse" endpoint for an agent.
+          $location.path('/agents/' + $routeParams.agent_id + '/browse')
+            .search({path: sandboxDirectory})
+            .replace();
+        })
+        .error(function(_response) {
+          $alert.danger({
+            bullets: [
+             "The agent is not accessible",
+             "The agent timed out or went offline"
+            ],
+            message: "Potential reasons:",
+            title: "Failed to connect to agent '" + $routeParams.agent_id +
+              "' on '" + url + "'."
+          });
+
+          // Is the agent dead? Navigate home since returning to the agent might
+          // end up in an endless loop.
+          $location.path('/').replace();
         });
+    };
 
-        // Is the agent dead? Navigate home since returning to the agent might
-        // end up in an endless loop.
-        $location.path('/').replace();
-      });
+    // When navigating directly to this page, e.g. pasting the URL into the
+    // browser, the previous page is not a page in Mesos. The agents
+    // information may not ready when loading this page, we start to reroute
+    // the sandbox request after the agents information loaded.
+    if ($scope.state) {
+      reroute();
+    }
+
+    // `reroute` is expected to always route away from the current page
+    // and the listener would be removed after the first state update.
+    var removeListener = $scope.$on('state_updated', reroute);
+    $scope.$on('$routeChangeStart', removeListener);
   });
 
 
@@ -980,17 +1120,21 @@
         $scope.agent_id = $routeParams.agent_id;
         $scope.path = $routeParams.path;
 
-        var pid = $scope.agents[$routeParams.agent_id].pid;
-        var hostname = $scope.agents[$routeParams.agent_id].hostname;
-        var id = pid.substring(0, pid.indexOf('@'));
-        var host = hostname + ":" + pid.substring(pid.lastIndexOf(':') + 1);
-        var url = '//' + host + '/files/browse?jsonp=JSON_CALLBACK';
+        var agent = $scope.agents[$routeParams.agent_id];
 
-        $scope.agent_host = host;
+        // This variable is used in 'browse.html' to generate the '/files'
+        // links, so we have to pass `includeProcessId=false` (see
+        // `agentURLPrefix`for more details).
+        $scope.agent_url_prefix = agentURLPrefix(agent, false);
 
         $scope.pail = function($event, path) {
-          pailer(host, path, decodeURIComponent(path));
+          pailer(
+            agentURLPrefix(agent, false),
+            path,
+            decodeURIComponent(path) + ' (' + agent.id + ')');
         };
+
+        var url = agentURLPrefix(agent, false) + '/files/browse?jsonp=JSON_CALLBACK';
 
         // TODO(bmahler): Try to get the error code / body in the error callback.
         // This wasn't working with the current version of angular.

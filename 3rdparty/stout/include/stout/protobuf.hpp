@@ -27,6 +27,7 @@
 #include <vector>
 
 #include <google/protobuf/descriptor.h>
+#include <google/protobuf/descriptor.pb.h>
 #include <google/protobuf/message.h>
 #include <google/protobuf/repeated_field.h>
 
@@ -111,16 +112,9 @@ Try<Nothing> write(
 template <typename T>
 Try<Nothing> write(const std::string& path, const T& t)
 {
-  int operation_flags = O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC;
-#ifdef __WINDOWS__
-  // NOTE: Windows does automatic linefeed conversions in I/O on text files.
-  // We include the `_O_BINARY` flag here to avoid this.
-  operation_flags |= _O_BINARY;
-#endif // __WINDOWS__
-
   Try<int_fd> fd = os::open(
       path,
-      operation_flags,
+      O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
   if (fd.isError()) {
@@ -142,16 +136,9 @@ inline Try<Nothing> append(
     const std::string& path,
     const google::protobuf::Message& message)
 {
-  int operation_flags = O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC;
-#ifdef __WINDOWS__
-  // NOTE: Windows does automatic linefeed conversions in I/O on text files.
-  // We include the `_O_BINARY` flag here to avoid this.
-  operation_flags |= _O_BINARY;
-#endif // __WINDOWS__
-
   Try<int_fd> fd = os::open(
       path,
-      operation_flags,
+      O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
   if (fd.isError()) {
@@ -355,16 +342,9 @@ Result<T> read(int_fd fd, bool ignorePartial = false, bool undoFailed = false)
 template <typename T>
 Result<T> read(const std::string& path)
 {
-  int operation_flags = O_RDONLY | O_CLOEXEC;
-#ifdef __WINDOWS__
-  // NOTE: Windows does automatic linefeed conversions in I/O on text files.
-  // We include the `_O_BINARY` flag here to avoid this.
-  operation_flags |= _O_BINARY;
-#endif // __WINDOWS__
-
   Try<int_fd> fd = os::open(
       path,
-      operation_flags,
+      O_RDONLY | O_CLOEXEC,
       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
   if (fd.isError()) {
@@ -450,7 +430,19 @@ struct Parser : boost::static_visitor<Try<Nothing>>
           field->enum_type()->FindValueByName(string.value);
 
         if (descriptor == nullptr) {
-          return Error("Failed to find enum for '" + string.value + "'");
+          if (field->is_required()) {
+            return Error("Failed to find enum for '" + string.value + "'");
+          }
+
+          // Unrecognized enum value will be discarded if this is not a
+          // required enum field, which makes the field's `has..` accessor
+          // return false and its getter return the first value listed in
+          // the enum definition, or the default value if one is specified.
+          //
+          // This is the deserialization behavior of proto2, see the link
+          // below for details:
+          // https://developers.google.com/protocol-buffers/docs/proto#updating
+          break;
         }
 
         if (field->is_repeated()) {
@@ -698,8 +690,8 @@ struct Protobuf : Representation<google::protobuf::Message>
 
 
 // `json` function for protobuf messages. Refer to `jsonify.hpp` for details.
-// TODO(mpark): This currently uses the default value for optional fields with
-// a default that are not set, but we may want to revisit this decision.
+// TODO(mpark): This currently uses the default value for optional fields
+// that are not deprecated, but we may want to revisit this decision.
 inline void json(ObjectWriter* writer, const Protobuf& protobuf)
 {
   using google::protobuf::FieldDescriptor;
@@ -723,8 +715,9 @@ inline void json(ObjectWriter* writer, const Protobuf& protobuf)
         // Has repeated field with members, output as JSON.
         fields.push_back(field);
       }
-    } else if (reflection->HasField(message, field) ||
-               field->has_default_value()) {
+    } else if (
+        reflection->HasField(message, field) ||
+        (field->has_default_value() && !field->options().deprecated())) {
       // Field is set or has default, output as JSON.
       fields.push_back(field);
     }
@@ -832,8 +825,8 @@ inline void json(ObjectWriter* writer, const Protobuf& protobuf)
 }
 
 
-// TODO(bmahler): This currently uses the default value for optional
-// fields but we may want to revisit this decision.
+// TODO(bmahler): This currently uses the default value for optional fields
+// that are not deprecated, but we may want to revisit this decision.
 inline Object protobuf(const google::protobuf::Message& message)
 {
   Object object;
@@ -854,8 +847,9 @@ inline Object protobuf(const google::protobuf::Message& message)
         // Has repeated field with members, output as JSON.
         fields.push_back(field);
       }
-    } else if (reflection->HasField(message, field) ||
-               field->has_default_value()) {
+    } else if (
+        reflection->HasField(message, field) ||
+        (field->has_default_value() && !field->options().deprecated())) {
       // Field is set or has default, output as JSON.
       fields.push_back(field);
     }
@@ -978,7 +972,7 @@ inline Object protobuf(const google::protobuf::Message& message)
           break;
         case google::protobuf::FieldDescriptor::TYPE_MESSAGE:
           object.values[field->name()] =
-              protobuf(reflection->GetMessage(message, field));
+            protobuf(reflection->GetMessage(message, field));
           break;
         case google::protobuf::FieldDescriptor::TYPE_ENUM:
           object.values[field->name()] =

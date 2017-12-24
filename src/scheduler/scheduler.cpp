@@ -41,6 +41,8 @@
 
 #include <mesos/master/detector.hpp>
 
+#include <mesos/module/http_authenticatee.hpp>
+
 #include <process/async.hpp>
 #include <process/collect.hpp>
 #include <process/defer.hpp>
@@ -73,6 +75,8 @@
 #include <stout/unreachable.hpp>
 #include <stout/uuid.hpp>
 
+#include "authentication/http/basic_authenticatee.hpp"
+
 #include "common/http.hpp"
 #include "common/recordio.hpp"
 
@@ -86,6 +90,8 @@
 #include "master/validation.hpp"
 
 #include "messages/messages.hpp"
+
+#include "module/manager.hpp"
 
 #include "scheduler/flags.hpp"
 
@@ -114,8 +120,6 @@ using process::wait; // Necessary on some OS's to disambiguate.
 using process::http::Connection;
 using process::http::Pipe;
 using process::http::post;
-using process::http::Request;
-using process::http::Response;
 using process::http::URL;
 
 using ::recordio::Decoder;
@@ -176,7 +180,7 @@ public:
 
     // Initialize logging.
     if (flags.initialize_driver_logging) {
-      logging::initialize("mesos", flags);
+      logging::initialize("mesos", false, flags);
     } else {
       VLOG(1) << "Disabling initialization of GLOG logging";
     }
@@ -246,7 +250,7 @@ public:
     // to the slave, instead of relaying it through the master, as
     // the scheduler driver does.
 
-    ::Request request;
+    process::http::Request request;
     request.method = "POST";
     request.url = master.get();
     request.body = serialize(contentType, call);
@@ -254,37 +258,9 @@ public:
     request.headers = {{"Accept", stringify(contentType)},
                        {"Content-Type", stringify(contentType)}};
 
-    // TODO(anand): Add support for other authentication schemes.
-
-    if (credential.isSome()) {
-      request.headers["Authorization"] =
-        "Basic " +
-        base64::encode(credential->principal() + ":" + credential->secret());
-    }
-
-    CHECK_SOME(connections);
-
-    Future<Response> response;
-    if (call.type() == Call::SUBSCRIBE) {
-      state = SUBSCRIBING;
-
-      // Send a streaming request for Subscribe call.
-      response = connections->subscribe.send(request, true);
-    } else {
-      CHECK_SOME(streamId);
-
-      // Set the stream ID associated with this connection.
-      request.headers["Mesos-Stream-Id"] = streamId->toString();
-
-      response = connections->nonSubscribe.send(request);
-    }
-
-    CHECK_SOME(connectionId);
-    response.onAny(defer(self(),
-                         &Self::_send,
-                         connectionId.get(),
-                         call,
-                         lambda::_1));
+    // TODO(tillt): Add support for multi-step authentication protocols.
+    authenticatee->authenticate(request, credential)
+      .onAny(defer(self(), &Self::_send, call, lambda::_1));
   }
 
   void reconnect()
@@ -307,12 +283,60 @@ public:
 protected:
   virtual void initialize()
   {
+    // Initialize modules.
+    if (flags.modules.isSome() && flags.modulesDir.isSome()) {
+      EXIT(EXIT_FAILURE) << "Only one of MESOS_MODULES or MESOS_MODULES_DIR "
+                         << "should be specified";
+    }
+
+    if (flags.modulesDir.isSome()) {
+      Try<Nothing> result =
+        modules::ModuleManager::load(flags.modulesDir.get());
+
+      if (result.isError()) {
+        EXIT(EXIT_FAILURE) << "Error loading modules: " << result.error();
+      }
+    }
+
+    if (flags.modules.isSome()) {
+      Try<Nothing> result = modules::ModuleManager::load(flags.modules.get());
+
+      if (result.isError()) {
+        EXIT(EXIT_FAILURE) << "Error loading modules: " << result.error();
+      }
+    }
+
+    // Initialize authenticatee.
+    if (flags.httpAuthenticatee == DEFAULT_BASIC_HTTP_AUTHENTICATEE) {
+      LOG(INFO) << "Using default '" << DEFAULT_BASIC_HTTP_AUTHENTICATEE
+                << "' HTTP authenticatee";
+
+      authenticatee = Owned<mesos::http::authentication::Authenticatee>(
+          new mesos::http::authentication::BasicAuthenticatee);
+    } else {
+      LOG(INFO) << "Using '" << flags.httpAuthenticatee
+                << "' HTTP authenticatee";
+
+      Try<mesos::http::authentication::Authenticatee*> createdAuthenticatee =
+        modules::ModuleManager::create<
+            mesos::http::authentication::Authenticatee>(
+                flags.httpAuthenticatee);
+
+      if (createdAuthenticatee.isError()) {
+        EXIT(EXIT_FAILURE) << "Failed to load HTTP authenticatee: "
+                           << createdAuthenticatee.error();
+      }
+
+      authenticatee = Owned<mesos::http::authentication::Authenticatee>(
+          createdAuthenticatee.get());
+    }
+
     // Start detecting masters.
     detection = detector->detect()
       .onAny(defer(self(), &MesosProcess::detected, lambda::_1));
   }
 
-  void connect(const UUID& _connectionId)
+  void connect(const id::UUID& _connectionId)
   {
     // It is possible that a new master was detected while we were waiting
     // to establish a connection with the old master.
@@ -337,7 +361,7 @@ protected:
   }
 
   void connected(
-      const UUID& _connectionId,
+      const id::UUID& _connectionId,
       const Future<tuple<Connection, Connection>>& _connections)
   {
     // It is possible that a new master was detected while we had an ongoing
@@ -387,7 +411,7 @@ protected:
   }
 
   void disconnected(
-      const UUID& _connectionId,
+      const id::UUID& _connectionId,
       const string& failure)
   {
     // Ignore if the disconnection happened from an old stale connection.
@@ -469,7 +493,7 @@ protected:
 
       LOG(INFO) << "New master detected at " << upid;
 
-      connectionId = UUID::random();
+      connectionId = id::UUID::random();
 
       // Wait for a random duration between 0 and `flags.connectionDelayMax`
       // before (re-)connecting with the master.
@@ -513,10 +537,49 @@ protected:
     LOG(WARNING) << "Dropping " << call.type() << ": " << message;
   }
 
-  void _send(
-      const UUID& _connectionId,
+  void _send(const Call& call, const Future<process::http::Request>& future)
+  {
+    if (!future.isReady()) {
+      LOG(ERROR) << "HTTP authenticatee "
+                 << (future.isFailed() ? "failed: " + future.failure()
+                                       : "discarded");
+      return;
+    }
+
+    process::http::Request request = future.get();
+
+    if (connections.isNone()) {
+      drop(call, "Connection to master interrupted");
+      return;
+    }
+
+    Future<process::http::Response> response;
+    if (call.type() == Call::SUBSCRIBE) {
+      state = SUBSCRIBING;
+
+      // Send a streaming request for Subscribe call.
+      response = connections->subscribe.send(request, true);
+    } else {
+      CHECK_SOME(streamId);
+
+      // Set the stream ID associated with this connection.
+      request.headers["Mesos-Stream-Id"] = streamId->toString();
+
+      response = connections->nonSubscribe.send(request);
+    }
+
+    CHECK_SOME(connectionId);
+    response.onAny(defer(self(),
+                         &Self::__send,
+                         connectionId.get(),
+                         call,
+                         lambda::_1));
+  }
+
+  void __send(
+      const id::UUID& _connectionId,
       const Call& call,
-      const Future<Response>& response)
+      const Future<process::http::Response>& response)
   {
     // It is possible that we detected a new master before a response could
     // be received.
@@ -539,7 +602,7 @@ protected:
     if (response->code == process::http::Status::OK) {
       // Only SUBSCRIBE call should get a "200 OK" response.
       CHECK_EQ(Call::SUBSCRIBE, call.type());
-      CHECK_EQ(response->type, http::Response::PIPE);
+      CHECK_EQ(response->type, process::http::Response::PIPE);
       CHECK_SOME(response->reader);
 
       state = SUBSCRIBED;
@@ -557,8 +620,8 @@ protected:
       // Responses to SUBSCRIBE calls should always include a stream ID.
       CHECK(response->headers.contains("Mesos-Stream-Id"));
 
-      Try<UUID> uuid =
-        UUID::fromString(response->headers.at("Mesos-Stream-Id"));
+      Try<id::UUID> uuid =
+        id::UUID::fromString(response->headers.at("Mesos-Stream-Id"));
 
       CHECK_SOME(uuid);
 
@@ -769,7 +832,7 @@ private:
   // the master (e.g., the master failed over while an attempt was in progress).
   // This helps us in uniquely identifying the current connection instance and
   // ignoring the stale instance.
-  Option<UUID> connectionId; // UUID to identify the connection instance.
+  Option<id::UUID> connectionId; // UUID to identify the connection instance.
 
   Option<Connections> connections;
   Option<SubscribedResponse> subscribed;
@@ -781,8 +844,10 @@ private:
   shared_ptr<MasterDetector> detector;
   queue<Event> events;
   Option<::URL> master;
-  Option<UUID> streamId;
+  Option<id::UUID> streamId;
   const Flags flags;
+
+  Owned<mesos::http::authentication::Authenticatee> authenticatee;
 
   // Master detection future.
   process::Future<Option<mesos::MasterInfo>> detection;
@@ -843,9 +908,7 @@ Mesos::Mesos(
 
 Mesos::~Mesos()
 {
-  if (process != nullptr) {
-    stop();
-  }
+  stop();
 }
 
 

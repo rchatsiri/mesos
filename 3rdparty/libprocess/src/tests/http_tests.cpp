@@ -56,6 +56,10 @@
 
 namespace authentication = process::http::authentication;
 namespace http = process::http;
+namespace ID = process::ID;
+namespace inet = process::network::inet;
+namespace inet4 = process::network::inet4;
+namespace network = process::network;
 #ifndef __WINDOWS__
 namespace unix = process::network::unix;
 #endif // __WINDOWS__
@@ -80,9 +84,6 @@ using process::READONLY_HTTP_AUTHENTICATION_REALM;
 using process::READWRITE_HTTP_AUTHENTICATION_REALM;
 
 using process::http::URL;
-
-using process::network::inet::Address;
-using process::network::inet::Socket;
 
 using std::string;
 using std::vector;
@@ -236,10 +237,10 @@ TEST_P(HTTPTest, Endpoints)
   Http http;
 
   // First hit '/body' (using explicit sockets and HTTP/1.0).
-  Try<Socket> create = Socket::create();
+  Try<inet::Socket> create = inet::Socket::create();
   ASSERT_SOME(create);
 
-  Socket socket = create.get();
+  inet::Socket socket = create.get();
 
   AWAIT_READY(socket.connect(http.process->self().address));
 
@@ -597,6 +598,16 @@ TEST_P(HTTPTest, Encode)
 }
 
 
+TEST_P(HTTPTest, EncodeAdditionalChars)
+{
+  string unencoded = "foo.bar";
+  string encoded = http::encode(unencoded, ".");
+
+  EXPECT_EQ("foo%2Ebar", encoded);
+  EXPECT_SOME_EQ(unencoded, http::decode(encoded));
+}
+
+
 TEST_P(HTTPTest, PathParse)
 {
   const string pattern = "/books/{isbn}/chapters/{chapter}";
@@ -645,7 +656,7 @@ TEST_P(HTTPTest, PathParse)
 
 http::Response validateGetWithoutQuery(const http::Request& request)
 {
-  EXPECT_SOME_NE(process::address(), request.client);
+  EXPECT_SOME_NE(network::Address(process::address()), request.client);
   EXPECT_EQ("GET", request.method);
   EXPECT_THAT(request.url.path, EndsWith("get"));
   EXPECT_EQ("", request.body);
@@ -658,7 +669,7 @@ http::Response validateGetWithoutQuery(const http::Request& request)
 
 http::Response validateGetWithQuery(const http::Request& request)
 {
-  EXPECT_SOME_NE(process::address(), request.client);
+  EXPECT_SOME_NE(network::Address(process::address()), request.client);
   EXPECT_EQ("GET", request.method);
   EXPECT_THAT(request.url.path, EndsWith("get"));
   EXPECT_EQ("", request.body);
@@ -1809,9 +1820,7 @@ TEST_F(HttpAuthenticationTest, Unauthorized)
   Future<http::Response> response =
     http::get(http.process->self(), "authenticated");
 
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
-      http::Unauthorized({}).status,
-      response);
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Unauthorized({}).status, response);
 
   EXPECT_EQ(
       authentication.unauthorized->headers.get("WWW-Authenticate"),
@@ -1969,9 +1978,7 @@ TEST_F(HttpAuthenticationTest, Basic)
   {
     Future<http::Response> response = http::get(*http.process, "authenticated");
 
-    AWAIT_EXPECT_RESPONSE_STATUS_EQ(
-        http::Unauthorized({}).status,
-        response);
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Unauthorized({}).status, response);
   }
 
   // Wrong password provided.
@@ -1983,9 +1990,7 @@ TEST_F(HttpAuthenticationTest, Basic)
     Future<http::Response> response =
       http::get(http.process->self(), "authenticated", None(), headers);
 
-    AWAIT_EXPECT_RESPONSE_STATUS_EQ(
-        http::Unauthorized({}).status,
-        response);
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Unauthorized({}).status, response);
   }
 
   // Wrong username provided.
@@ -1997,9 +2002,7 @@ TEST_F(HttpAuthenticationTest, Basic)
     Future<http::Response> response =
       http::get(http.process->self(), "authenticated", None(), headers);
 
-    AWAIT_EXPECT_RESPONSE_STATUS_EQ(
-        http::Unauthorized({}).status,
-        response);
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Unauthorized({}).status, response);
   }
 
   // Right credentials provided.
@@ -2103,13 +2106,13 @@ class HttpServeTest : public TemporaryDirectoryTest {};
 
 TEST_F(HttpServeTest, Pipelining)
 {
-  Try<Socket> server = Socket::create();
+  Try<inet::Socket> server = inet::Socket::create();
   ASSERT_SOME(server);
 
-  ASSERT_SOME(server->bind(Address::ANY_ANY()));
+  ASSERT_SOME(server->bind(inet4::Address::ANY_ANY()));
   ASSERT_SOME(server->listen(1));
 
-  Try<Address> any_address = server->address();
+  Try<inet::Address> any_address = server->address();
   ASSERT_SOME(any_address);
 
   // Connect to the IP from the libprocess library, but use the port
@@ -2122,9 +2125,9 @@ TEST_F(HttpServeTest, Pipelining)
   // invalid address, except when used to resolve a host's address
   // for the first time.
   // See: https://tools.ietf.org/html/rfc1122#section-3.2.1.3
-  Address address(process::address().ip, any_address->port);
+  inet::Address address(process::address().ip, any_address->port);
 
-  Future<Socket> accept = server->accept();
+  Future<inet::Socket> accept = server->accept();
 
   Future<http::Connection> connect =
     http::connect(address, http::Scheme::HTTP);
@@ -2133,7 +2136,7 @@ TEST_F(HttpServeTest, Pipelining)
   http::Connection connection = connect.get();
 
   AWAIT_READY(accept);
-  Socket socket = accept.get();
+  inet::Socket socket = accept.get();
 
   class Handler
   {
@@ -2211,13 +2214,13 @@ TEST_F(HttpServeTest, Pipelining)
 
 TEST_F(HttpServeTest, Discard)
 {
-  Try<Socket> server = Socket::create();
+  Try<inet::Socket> server = inet::Socket::create();
   ASSERT_SOME(server);
 
-  ASSERT_SOME(server->bind(Address::ANY_ANY()));
+  ASSERT_SOME(server->bind(inet4::Address::ANY_ANY()));
   ASSERT_SOME(server->listen(1));
 
-  Try<Address> any_address = server->address();
+  Try<inet::Address> any_address = server->address();
   ASSERT_SOME(any_address);
 
   // Connect to the IP from the libprocess library, but use the port
@@ -2226,9 +2229,9 @@ TEST_F(HttpServeTest, Discard)
   // socket above.
   //
   // See the comment in `HttpServeTest.Pipelining` for more details.
-  Address address(process::address().ip, any_address->port);
+  inet::Address address(process::address().ip, any_address->port);
 
-  Future<Socket> accept = server->accept();
+  Future<inet::Socket> accept = server->accept();
 
   Future<http::Connection> connect =
     http::connect(address, http::Scheme::HTTP);
@@ -2237,7 +2240,7 @@ TEST_F(HttpServeTest, Discard)
   http::Connection connection = connect.get();
 
   AWAIT_READY(accept);
-  Socket socket = accept.get();
+  inet::Socket socket = accept.get();
 
   class Handler
   {
@@ -2339,3 +2342,253 @@ TEST_F(HttpServeTest, Unix)
   AWAIT_READY(serve);
 }
 #endif // __WINDOWS__
+
+
+// Ensures that the server does not re-order responses if handlers
+// complete the responses out of order.
+TEST(HttpServerTest, Pipeline)
+{
+  class Handler
+  {
+  public:
+    MOCK_METHOD1(handle, Future<http::Response>(const http::Request&));
+  } handler;
+
+  Try<http::Server> server = http::Server::create(
+      inet4::Address::ANY_ANY(),
+      [&](const network::Socket&, const http::Request& request) {
+        return handler.handle(request);
+      });
+
+  ASSERT_SOME(server);
+
+  Future<Nothing> run = server->run();
+
+  Try<inet::Address> address =
+    network::convert<inet::Address>(server->address());
+
+  ASSERT_SOME(address);
+
+  // Connect to the IP from the libprocess library, but use the port from
+  // the server above. The libprocess IP will always report a locally
+  // bindable IP, meaning it will also work for the server above.
+  //
+  // See the comment in `HttpServeTest.Pipelining` for more details.
+  Future<http::Connection> connect = http::connect(
+      inet::Address(process::address().ip, address->port),
+      http::Scheme::HTTP);
+
+  AWAIT_ASSERT_READY(connect);
+
+  http::Connection connection = connect.get();
+
+  Promise<http::Response> promise1;
+  Future<http::Request> request1;
+
+  Promise<http::Response> promise2;
+  Future<http::Request> request2;
+
+  Promise<http::Response> promise3;
+  Future<http::Request> request3;
+
+  EXPECT_CALL(handler, handle(_))
+    .WillOnce(DoAll(FutureArg<0>(&request1), Return(promise1.future())))
+    .WillOnce(DoAll(FutureArg<0>(&request2), Return(promise2.future())))
+    .WillOnce(DoAll(FutureArg<0>(&request3), Return(promise3.future())))
+    .WillRepeatedly(Return(http::OK()));
+
+  http::URL url("http", address->hostname().get(), address->port, "/");
+
+  http::Request request;
+  request.method = "GET";
+  request.url = url;
+  request.keepAlive = true;
+
+  Future<http::Response> response1 = connection.send(request);
+  Future<http::Response> response2 = connection.send(request);
+  Future<http::Response> response3 = connection.send(request);
+
+  AWAIT_EXPECT_READY(request1);
+  AWAIT_EXPECT_READY(request2);
+  AWAIT_EXPECT_READY(request3);
+
+  ASSERT_TRUE(response1.isPending());
+  ASSERT_TRUE(response2.isPending());
+  ASSERT_TRUE(response3.isPending());
+
+  promise3.set(http::OK("3"));
+
+  ASSERT_TRUE(response1.isPending());
+  ASSERT_TRUE(response2.isPending());
+  ASSERT_TRUE(response3.isPending());
+
+  promise1.set(http::OK("1"));
+
+  AWAIT_ASSERT_READY(response1);
+  EXPECT_EQ("1", response1->body);
+
+  ASSERT_TRUE(response2.isPending());
+  ASSERT_TRUE(response3.isPending());
+
+  promise2.set(http::OK("2"));
+
+  AWAIT_ASSERT_READY(response2);
+  EXPECT_EQ("2", response2->body);
+
+  AWAIT_ASSERT_READY(response3);
+  EXPECT_EQ("3", response3->body);
+
+  AWAIT_READY(connection.disconnect());
+
+  ASSERT_TRUE(run.isPending());
+
+  AWAIT_EXPECT_READY(server->stop());
+
+  AWAIT_EXPECT_READY(run);
+}
+
+
+// Tests that we can't stop a server that's not running.
+TEST(HttpServerTest, StopNotRunning)
+{
+  class Handler
+  {
+  public:
+    MOCK_METHOD1(handle, Future<http::Response>(const http::Request&));
+  } handler;
+
+  Try<http::Server> server = http::Server::create(
+      inet4::Address::ANY_ANY(),
+      [&](const network::Socket&, const http::Request& request) {
+        return handler.handle(request);
+      });
+
+  ASSERT_SOME(server);
+
+  AWAIT_EXPECT_FAILED(server->stop());
+}
+
+
+// Tests that we can discard a server that we started running and it
+// will return a failure after the server has stopped.
+TEST(HttpServerTest, Discard)
+{
+  class Handler
+  {
+  public:
+    MOCK_METHOD1(handle, Future<http::Response>(const http::Request&));
+  } handler;
+
+  Try<http::Server> server = http::Server::create(
+      inet4::Address::ANY_ANY(),
+      [&](const network::Socket&, const http::Request& request) {
+        return handler.handle(request);
+      });
+
+  ASSERT_SOME(server);
+
+  EXPECT_CALL(handler, handle(_))
+    .Times(0);
+
+  Future<Nothing> run = server->run();
+
+  Try<inet::Address> address =
+    network::convert<inet::Address>(server->address());
+
+  ASSERT_SOME(address);
+
+  // Connect to the IP from the libprocess library, but use the port from
+  // the server above. The libprocess IP will always report a locally
+  // bindable IP, meaning it will also work for the server above.
+  //
+  // See the comment in `HttpServeTest.Pipelining` for more details.
+  //
+  // NOTE: we can't guarantee that after the call to `server->run()`
+  // the server is actually running because the actor might not yet
+  // have received the asynchronous dispatch. Thus, we need some
+  // happens before guarantee that the server is running which we get
+  // by making a connection. We then use that connection to properly
+  // test that we shutdown each client below.
+  Future<http::Connection> connect = http::connect(
+      inet::Address(process::address().ip, address->port),
+      http::Scheme::HTTP);
+
+  AWAIT_ASSERT_READY(connect);
+
+  http::Connection connection = connect.get();
+
+  Future<Nothing> disconnected = connection.disconnected();
+
+  EXPECT_TRUE(disconnected.isPending());
+
+  run.discard();
+
+  AWAIT_EXPECT_READY(disconnected);
+
+  AWAIT_EXPECT_FAILED(run);
+}
+
+
+// Tests that if the server gets finalized due to the process getting
+// cleaned up but nobody called `Server::stop()` then we'll shutdown
+// existing clients and the future returned from `Server::run()` will
+// be abandoned.
+TEST(HttpServerTest, Finalize)
+{
+  Future<Nothing> run = Nothing();
+  Future<Nothing> disconnected = Nothing();
+
+  {
+    class Handler
+    {
+    public:
+      MOCK_METHOD1(handle, Future<http::Response>(const http::Request&));
+    } handler;
+
+    Try<http::Server> server = http::Server::create(
+        inet4::Address::ANY_ANY(),
+        [&](const network::Socket&, const http::Request& request) {
+          return handler.handle(request);
+        });
+
+    ASSERT_SOME(server);
+
+    EXPECT_CALL(handler, handle(_))
+      .Times(0);
+
+    run = server->run();
+
+    Try<inet::Address> address =
+      network::convert<inet::Address>(server->address());
+
+    ASSERT_SOME(address);
+
+    // Connect to the IP from the libprocess library, but use the port from
+    // the server above. The libprocess IP will always report a locally
+    // bindable IP, meaning it will also work for the server above.
+    //
+    // See the comment in `HttpServeTest.Pipelining` for more details.
+    //
+    // NOTE: we can't guarantee that after the call to `server->run()`
+    // the server is actually running because the actor might not yet
+    // have received the asynchronous dispatch. Thus, we need some
+    // happens before guarantee that the server is running which we
+    // get by making a connection. We then use that connection to
+    // properly test that we shutdown each client below.
+    Future<http::Connection> connect = http::connect(
+        inet::Address(process::address().ip, address->port),
+        http::Scheme::HTTP);
+
+    AWAIT_ASSERT_READY(connect);
+
+    http::Connection connection = connect.get();
+
+    disconnected = connection.disconnected();
+
+    EXPECT_TRUE(disconnected.isPending());
+  }
+
+  AWAIT_EXPECT_READY(disconnected);
+
+  AWAIT_EXPECT_ABANDONED(run);
+}

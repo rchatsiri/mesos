@@ -38,6 +38,7 @@
 #include <stout/ip.hpp>
 #include <stout/none.hpp>
 #include <stout/option.hpp>
+#include <stout/try.hpp>
 #include <stout/uuid.hpp>
 
 #include "messages/messages.hpp"
@@ -48,10 +49,14 @@ struct UPID;
 }
 
 namespace mesos {
+
+class AuthorizationAcceptor;
+
 namespace internal {
 
 namespace master {
 // Forward declaration (in lieu of an include).
+struct Framework;
 struct Slave;
 } // namespace master {
 
@@ -76,7 +81,7 @@ StatusUpdate createStatusUpdate(
     const TaskID& taskId,
     const TaskState& state,
     const TaskStatus::Source& source,
-    const Option<UUID>& uuid,
+    const Option<id::UUID>& uuid,
     const std::string& message = "",
     const Option<TaskStatus::Reason>& reason = None(),
     const Option<ExecutorID>& executorId = None(),
@@ -84,7 +89,8 @@ StatusUpdate createStatusUpdate(
     const Option<CheckStatusInfo>& checkStatus = None(),
     const Option<Labels>& labels = None(),
     const Option<ContainerStatus>& containerStatus = None(),
-    const Option<TimeInfo>& unreachableTime = None());
+    const Option<TimeInfo>& unreachableTime = None(),
+    const Option<Resources>& limitedResources = None());
 
 
 StatusUpdate createStatusUpdate(
@@ -98,7 +104,7 @@ StatusUpdate createStatusUpdate(
 TaskStatus createTaskStatus(
     const TaskID& taskId,
     const TaskState& state,
-    const UUID& uuid,
+    const id::UUID& uuid,
     double timestamp);
 
 
@@ -115,7 +121,7 @@ TaskStatus createTaskStatus(
 // delivered previously.
 TaskStatus createTaskStatus(
     TaskStatus status,
-    const UUID& uuid,
+    const id::UUID& uuid,
     double timestamp,
     const Option<TaskState>& state = None(),
     const Option<std::string>& message = None(),
@@ -144,6 +150,33 @@ Option<CheckStatusInfo> getTaskCheckStatus(const Task& task);
 Option<ContainerStatus> getTaskContainerStatus(const Task& task);
 
 
+bool isTerminalState(const OperationState& state);
+
+
+OperationStatus createOperationStatus(
+    const OperationState& state,
+    const Option<OperationID>& operationId = None(),
+    const Option<std::string>& message = None(),
+    const Option<Resources>& convertedResources = None(),
+    const Option<id::UUID>& statusUUID = None());
+
+
+Operation createOperation(
+    const Offer::Operation& info,
+    const OperationStatus& latestStatus,
+    const Option<FrameworkID>& frameworkId,
+    const Option<SlaveID>& slaveId,
+    const Option<id::UUID>& operationUUID = None());
+
+
+UpdateOperationStatusMessage createUpdateOperationStatusMessage(
+    const id::UUID& operationUUID,
+    const OperationStatus& status,
+    const Option<OperationStatus>& latestStatus = None(),
+    const Option<FrameworkID>& frameworkId = None(),
+    const Option<SlaveID>& slaveId = None());
+
+
 // Helper function that creates a MasterInfo from UPID.
 MasterInfo createMasterInfo(const process::UPID& pid);
 
@@ -151,6 +184,16 @@ MasterInfo createMasterInfo(const process::UPID& pid);
 Label createLabel(
     const std::string& key,
     const Option<std::string>& value = None());
+
+
+// Helper function to convert a protobuf string map to `Labels`.
+Labels convertStringMapToLabels(
+    const google::protobuf::Map<std::string, std::string>& map);
+
+
+// Helper function to convert a `Labels` to a protobuf string map.
+Try<google::protobuf::Map<std::string, std::string>> convertLabelsToStringMap(
+    const Labels& labels);
 
 
 // Previously, `Resource` did not contain `AllocationInfo`.
@@ -169,6 +212,20 @@ void injectAllocationInfo(
 void stripAllocationInfo(Offer::Operation* operation);
 
 
+bool isSpeculativeOperation(const Offer::Operation& operation);
+
+
+// Helper function to pack a protobuf list of resource versions.
+google::protobuf::RepeatedPtrField<ResourceVersionUUID> createResourceVersions(
+    const hashmap<Option<ResourceProviderID>, id::UUID>& resourceVersions);
+
+
+// Helper function to unpack a protobuf list of resource versions.
+hashmap<Option<ResourceProviderID>, id::UUID> parseResourceVersions(
+    const google::protobuf::RepeatedPtrField<ResourceVersionUUID>&
+      resourceVersionUUIDs);
+
+
 // Helper function that fills in a TimeInfo from the current time.
 TimeInfo getCurrentTime();
 
@@ -178,6 +235,9 @@ FileInfo createFileInfo(const std::string& path, const struct stat& s);
 
 
 ContainerID getRootContainerId(const ContainerID& containerId);
+
+
+Try<Resources> getConsumedResources(const Offer::Operation& operation);
 
 namespace slave {
 
@@ -197,6 +257,15 @@ struct Capabilities
         case SlaveInfo::Capability::MULTI_ROLE:
           multiRole = true;
           break;
+        case SlaveInfo::Capability::HIERARCHICAL_ROLE:
+          hierarchicalRole = true;
+          break;
+        case SlaveInfo::Capability::RESERVATION_REFINEMENT:
+          reservationRefinement = true;
+          break;
+        case SlaveInfo::Capability::RESOURCE_PROVIDER:
+          resourceProvider = true;
+          break;
         // If adding another case here be sure to update the
         // equality operator.
       }
@@ -205,6 +274,9 @@ struct Capabilities
 
   // See mesos.proto for the meaning of agent capabilities.
   bool multiRole = false;
+  bool hierarchicalRole = false;
+  bool reservationRefinement = false;
+  bool resourceProvider = false;
 
   google::protobuf::RepeatedPtrField<SlaveInfo::Capability>
   toRepeatedPtrField() const
@@ -212,6 +284,15 @@ struct Capabilities
     google::protobuf::RepeatedPtrField<SlaveInfo::Capability> result;
     if (multiRole) {
       result.Add()->set_type(SlaveInfo::Capability::MULTI_ROLE);
+    }
+    if (hierarchicalRole) {
+      result.Add()->set_type(SlaveInfo::Capability::HIERARCHICAL_ROLE);
+    }
+    if (reservationRefinement) {
+      result.Add()->set_type(SlaveInfo::Capability::RESERVATION_REFINEMENT);
+    }
+    if (resourceProvider) {
+      result.Add()->set_type(SlaveInfo::Capability::RESOURCE_PROVIDER);
     }
 
     return result;
@@ -273,7 +354,32 @@ mesos::maintenance::Schedule createSchedule(
 
 } // namespace maintenance {
 
+
 namespace master {
+
+// TODO(bmahler): Store the repeated field within this so that we
+// don't drop unknown capabilities.
+struct Capabilities
+{
+  Capabilities() = default;
+
+  template <typename Iterable>
+  Capabilities(const Iterable& capabilities)
+  {
+    foreach (const MasterInfo::Capability& capability, capabilities) {
+      switch (capability.type()) {
+        case MasterInfo::Capability::UNKNOWN:
+          break;
+        case MasterInfo::Capability::AGENT_UPDATE:
+          agentUpdate = true;
+          break;
+      }
+    }
+  }
+
+  bool agentUpdate = false;
+};
+
 namespace event {
 
 // Helper for creating a `TASK_UPDATED` event from a `Task`, its
@@ -289,9 +395,25 @@ mesos::master::Event createTaskUpdated(
 mesos::master::Event createTaskAdded(const Task& task);
 
 
+// Helper for creating a 'FRAMEWORK_ADDED' event from a `Framework`.
+mesos::master::Event createFrameworkAdded(
+    const mesos::internal::master::Framework& framework);
+
+
+// Helper for creating a 'FRAMEWORK_UPDATED' event from a `Framework`.
+mesos::master::Event createFrameworkUpdated(
+    const mesos::internal::master::Framework& framework);
+
+
+// Helper for creating a 'FRAMEWORK_REMOVED' event from a `FrameworkInfo`.
+mesos::master::Event createFrameworkRemoved(const FrameworkInfo& frameworkInfo);
+
+
 // Helper for creating an `Agent` response.
 mesos::master::Response::GetAgents::Agent createAgentResponse(
-    const mesos::internal::master::Slave& slave);
+    const mesos::internal::master::Slave& slave,
+    const Option<process::Owned<AuthorizationAcceptor>>& rolesAcceptor =
+      None());
 
 
 // Helper for creating an `AGENT_ADDED` event from a `Slave`.
@@ -338,6 +460,12 @@ struct Capabilities
         case FrameworkInfo::Capability::MULTI_ROLE:
           multiRole = true;
           break;
+        case FrameworkInfo::Capability::RESERVATION_REFINEMENT:
+          reservationRefinement = true;
+          break;
+        case FrameworkInfo::Capability::REGION_AWARE:
+          regionAware = true;
+          break;
       }
     }
   }
@@ -349,6 +477,8 @@ struct Capabilities
   bool sharedResources = false;
   bool partitionAware = false;
   bool multiRole = false;
+  bool reservationRefinement = false;
+  bool regionAware = false;
 };
 
 

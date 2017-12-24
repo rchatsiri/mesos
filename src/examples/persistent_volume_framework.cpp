@@ -52,6 +52,8 @@ using std::ostringstream;
 using std::string;
 using std::vector;
 
+constexpr char FRAMEWORK_NAME[] = "Persistent Volume Framework (C++)";
+
 
 // TODO(jieyu): Currently, persistent volume is only allowed for
 // reserved resources.
@@ -140,24 +142,27 @@ public:
       size_t numShards,
       size_t numSharedShards,
       size_t tasksPerShard)
-    : frameworkInfo(_frameworkInfo)
+    : frameworkInfo(_frameworkInfo),
+      role(_frameworkInfo.roles(0))
   {
     // Initialize the shards using regular persistent volume.
     for (size_t i = 0; i < numShards; i++) {
-      shards.push_back(Shard(
-          "shard-" + stringify(i),
-          frameworkInfo.role(),
-          tasksPerShard,
-          false));
+      shards.push_back(
+          Shard(
+              "shard-" + stringify(i),
+              role,
+              tasksPerShard,
+              false));
     }
 
     // Initialize the shards using shared persistent volume.
     for (size_t i = 0; i < numSharedShards; i++) {
-      shards.push_back(Shard(
-          "shared-shard-" + stringify(i),
-          frameworkInfo.role(),
-          tasksPerShard,
-          true));
+      shards.push_back(
+          Shard(
+              "shared-shard-" + stringify(i),
+              role,
+              tasksPerShard,
+              true));
     }
   }
 
@@ -179,8 +184,7 @@ public:
     LOG(INFO) << "Reregistered with master " << masterInfo;
   }
 
-  virtual void disconnected(
-      SchedulerDriver* driver)
+  virtual void disconnected(SchedulerDriver* driver)
   {
     LOG(INFO) << "Disconnected!";
   }
@@ -206,8 +210,8 @@ public:
 
             if (offered.contains(shard.resources)) {
               Resource volume = SHARD_PERSISTENT_VOLUME(
-                  frameworkInfo.role(),
-                  UUID::random().toString(),
+                  role,
+                  id::UUID::random().toString(),
                   "volume",
                   frameworkInfo.principal(),
                   shard.volume.isShared);
@@ -217,7 +221,7 @@ public:
 
               TaskInfo task;
               task.set_name(shard.name);
-              task.mutable_task_id()->set_value(UUID::random().toString());
+              task.mutable_task_id()->set_value(id::UUID::random().toString());
               task.mutable_slave_id()->CopyFrom(offer.slave_id());
               task.mutable_resources()->CopyFrom(resources.get());
 
@@ -236,9 +240,8 @@ public:
               operations.push_back(CREATE(volume));
               operations.push_back(LAUNCH({task}));
 
-              resources = offered.apply(vector<Offer::Operation>{
-                  CREATE(volume),
-                  LAUNCH({task})});
+              resources = offered.apply(
+                  vector<Offer::Operation>{CREATE(volume)});
 
               CHECK_SOME(resources);
               offered = resources.get();
@@ -266,7 +269,7 @@ public:
 
               TaskInfo task;
               task.set_name(shard.name);
-              task.mutable_task_id()->set_value(UUID::random().toString());
+              task.mutable_task_id()->set_value(id::UUID::random().toString());
               task.mutable_slave_id()->CopyFrom(offer.slave_id());
               task.mutable_resources()->CopyFrom(taskResources);
 
@@ -342,16 +345,12 @@ public:
     }
   }
 
-  virtual void offerRescinded(
-      SchedulerDriver* driver,
-      const OfferID& offerId)
+  virtual void offerRescinded(SchedulerDriver* driver, const OfferID& offerId)
   {
     LOG(INFO) << "Offer " << offerId << " has been rescinded";
   }
 
-  virtual void statusUpdate(
-      SchedulerDriver* driver,
-      const TaskStatus& status)
+  virtual void statusUpdate(SchedulerDriver* driver, const TaskStatus& status)
   {
     LOG(INFO) << "Task '" << status.task_id() << "' is in state "
               << status.state();
@@ -401,9 +400,7 @@ public:
               << "' on agent " << slaveId << ": '" << data << "'";
   }
 
-  virtual void slaveLost(
-      SchedulerDriver* driver,
-      const SlaveID& slaveId)
+  virtual void slaveLost(SchedulerDriver* driver, const SlaveID& slaveId)
   {
     LOG(INFO) << "Lost agent " << slaveId;
   }
@@ -418,9 +415,7 @@ public:
               << slaveId << ", " << WSTRINGIFY(status);
   }
 
-  virtual void error(
-      SchedulerDriver* driver,
-      const string& message)
+  virtual void error(SchedulerDriver* driver, const string& message)
   {
     LOG(ERROR) << message;
   }
@@ -457,8 +452,7 @@ private:
     // The persistent volume associated with this shard.
     struct Volume
     {
-      explicit Volume(bool _isShared)
-        : isShared(_isShared) {}
+      explicit Volume(bool _isShared) : isShared(_isShared) {}
 
       // `Resource` object for this volume.
       Option<Resource> resource;
@@ -491,6 +485,7 @@ private:
   };
 
   FrameworkInfo frameworkInfo;
+  const string role;
   vector<Shard> shards;
 };
 
@@ -546,17 +541,16 @@ public:
 int main(int argc, char** argv)
 {
   Flags flags;
-
   Try<flags::Warnings> load = flags.load("MESOS_", argc, argv);
-
-  if (load.isError()) {
-    cerr << flags.usage(load.error()) << endl;
-    return EXIT_FAILURE;
-  }
 
   if (flags.help) {
     cout << flags.usage() << endl;
     return EXIT_SUCCESS;
+  }
+
+  if (load.isError()) {
+    cerr << flags.usage(load.error()) << endl;
+    return EXIT_FAILURE;
   }
 
   if (flags.master.isNone()) {
@@ -564,7 +558,7 @@ int main(int argc, char** argv)
     return EXIT_FAILURE;
   }
 
-  logging::initialize(argv[0], flags, true); // Catch signals.
+  logging::initialize(argv[0], true, flags); // Catch signals.
 
   // Log any flag warnings (after logging is initialized).
   foreach (const flags::Warning& warning, load->warnings) {
@@ -573,12 +567,16 @@ int main(int argc, char** argv)
 
   FrameworkInfo framework;
   framework.set_user(""); // Have Mesos fill in the current user.
-  framework.set_name("Persistent Volume Framework (C++)");
-  framework.set_role(flags.role);
+  framework.set_name(FRAMEWORK_NAME);
+  framework.add_roles(flags.role);
+  framework.add_capabilities()->set_type(
+      FrameworkInfo::Capability::MULTI_ROLE);
   framework.set_checkpoint(true);
   framework.set_principal(flags.principal);
   framework.add_capabilities()->set_type(
       FrameworkInfo::Capability::SHARED_RESOURCES);
+  framework.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   if (flags.master.get() == "local") {
     // Configure master.

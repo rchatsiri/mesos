@@ -945,6 +945,19 @@ the registrar, which is the persistent store for masters.
   </td>
   <td>Gauge</td>
 </tr>
+<tr>
+  <td>
+  <code>registrar/log/ensemble_size</code>
+  </td>
+  <td>
+    The number of masters in the ensemble (cluster) that the current master
+    communicates with (including itself) to form the replicated log quorum.
+    It's imperative that this number is always less than `--quorum * 2` to
+    prevent split-brain. It's also important that it should be greater than
+    or equal to `--quorum` to maintain availability.
+  </td>
+  <td>Gauge</td>
+</tr>
 </table>
 
 #### Allocator
@@ -960,70 +973,70 @@ and resource allocations in the allocator.
   <td>
   <code>allocator/mesos/allocation_run_ms</code>
   </td>
-  <td>Allocation algorithm latency in ms</td>
+  <td>Time spent in allocation algorithm in ms</td>
   <td>Gauge</td>
 </tr>
 <tr>
   <td>
   <code>allocator/mesos/allocation_run_ms/count</code>
   </td>
-  <td>Number of allocation algorithm latency measurements in the window</td>
+  <td>Number of allocation algorithm time measurements in the window</td>
   <td>Gauge</td>
 </tr>
 <tr>
   <td>
   <code>allocator/mesos/allocation_run_ms/max</code>
   </td>
-  <td>Maximum allocation algorithm latency in ms</td>
+  <td>Maximum time spent in allocation algorithm in ms</td>
   <td>Gauge</td>
 </tr>
 <tr>
   <td>
   <code>allocator/mesos/allocation_run_ms/min</code>
   </td>
-  <td>Minimum allocation algorithm latency in ms</td>
+  <td>Minimum time spent in allocation algorithm in ms</td>
   <td>Gauge</td>
 </tr>
 <tr>
   <td>
   <code>allocator/mesos/allocation_run_ms/p50</code>
   </td>
-  <td>Median allocation algorithm latency in ms</td>
+  <td>Median time spent in allocation algorithm in ms</td>
   <td>Gauge</td>
 </tr>
 <tr>
   <td>
   <code>allocator/mesos/allocation_run_ms/p90</code>
   </td>
-  <td>90th percentile allocation algorithm latency in ms</td>
+  <td>90th percentile of time spent in allocation algorithm in ms</td>
   <td>Gauge</td>
 </tr>
 <tr>
   <td>
   <code>allocator/mesos/allocation_run_ms/p95</code>
   </td>
-  <td>95th percentile allocation algorithm latency in ms</td>
+  <td>95th percentile of time spent in allocation algorithm in ms</td>
   <td>Gauge</td>
 </tr>
 <tr>
   <td>
   <code>allocator/mesos/allocation_run_ms/p99</code>
   </td>
-  <td>99th percentile allocation algorithm latency in ms</td>
+  <td>99th percentile of time spent in allocation algorithm in ms</td>
   <td>Gauge</td>
 </tr>
 <tr>
   <td>
   <code>allocator/mesos/allocation_run_ms/p999</code>
   </td>
-  <td>99.9th percentile allocation algorithm latency in ms</td>
+  <td>99.9th percentile of time spent in allocation algorithm in ms</td>
   <td>Gauge</td>
 </tr>
 <tr>
   <td>
   <code>allocator/mesos/allocation_run_ms/p9999</code>
   </td>
-  <td>99.99th percentile allocation algorithm latency in ms</td>
+  <td>99.99th percentile of time spent in allocation algorithm in ms</td>
   <td>Gauge</td>
 </tr>
 <tr>
@@ -1032,6 +1045,76 @@ and resource allocations in the allocator.
   </td>
   <td>Number of times the allocation algorithm has run</td>
   <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_latency_ms</code>
+  </td>
+  <td>Allocation batch latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_latency_ms/count</code>
+  </td>
+  <td>Number of allocation batch latency measurements in the window</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_latency_ms/max</code>
+  </td>
+  <td>Maximum allocation batch latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_latency_ms/min</code>
+  </td>
+  <td>Minimum allocation batch latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_latency_ms/p50</code>
+  </td>
+  <td>Median allocation batch latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_latency_ms/p90</code>
+  </td>
+  <td>90th percentile allocation batch latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_latency_ms/p95</code>
+  </td>
+  <td>95th percentile allocation batch latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_latency_ms/p99</code>
+  </td>
+  <td>99th percentile allocation batch latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_latency_ms/p999</code>
+  </td>
+  <td>99.9th percentile allocation batch latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_latency_ms/p9999</code>
+  </td>
+  <td>99.99th percentile allocation batch latency in ms</td>
+  <td>Gauge</td>
 </tr>
 <tr>
   <td>
@@ -1170,6 +1253,42 @@ the agent and their current usage.
 <thead>
 <tr><th>Metric</th><th>Description</th><th>Type</th>
 </thead>
+<tr>
+  <td>
+  <code>containerizer/fetcher/cache_size_total_bytes</code>
+  </td>
+  <td>The configured maximum size of the fetcher cache in bytes. This value is
+  constant for the life of the Mesos agent.</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/fetcher/cache_size_used_bytes</code>
+  </td>
+  <td>The current amount of data stored in the fetcher cache in bytes.</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>gc/path_removals_failed</code>
+  </td>
+  <td>Number of times the agent garbage collection process has failed to remove a sandbox path.</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>gc/path_removals_pending</code>
+  </td>
+  <td>Number of sandbox paths that are currently pending agent garbage collection.</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>gc/path_removals_succeeded</code>
+  </td>
+  <td>Number of sandbox paths the agent successfully removed.</td>
+  <td>Counter</td>
+</tr>
 <tr>
   <td>
   <code>slave/cpus_percent</code>
@@ -1431,6 +1550,20 @@ on the agent.
   <code>containerizer/mesos/container_destroy_errors</code>
   </td>
   <td>Number of containers destroyed due to launch errors</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/fetcher/task_fetches_succeeded</code>
+  </td>
+  <td>Total number of times the Mesos fetcher successfully fetched all the URIs for a task.</td>
+  <td>Counter</td>
+</tr>
+<tr>
+  <td>
+  <code>containerizer/fetcher/task_fetches_failed</code>
+  </td>
+  <td>Number of times the Mesos fetcher failed to fetch all the URIs for a task.</td>
   <td>Counter</td>
 </tr>
 <tr>

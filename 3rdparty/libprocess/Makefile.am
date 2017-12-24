@@ -52,11 +52,14 @@ include ../versions.am
 STOUT = ../stout
 
 BOOST = $(BUNDLED_DIR)/boost-$(BOOST_VERSION)
+CONCURRENTQUEUE = $(BUNDLED_DIR)/concurrentqueue-$(CONCURRENTQUEUE_VERSION)
 ELFIO = $(BUNDLED_DIR)/elfio-$(ELFIO_VERSION)
 GLOG = $(BUNDLED_DIR)/glog-$(GLOG_VERSION)
-GMOCK = $(BUNDLED_DIR)/gmock-$(GMOCK_VERSION)
+GOOGLETEST = $(BUNDLED_DIR)/googletest-release-$(GOOGLETEST_VERSION)
+GMOCK = $(GOOGLETEST)/googlemock
 GPERFTOOLS = $(BUNDLED_DIR)/gperftools-$(GPERFTOOLS_VERSION)
-GTEST = $(GMOCK)/gtest
+GRPC = $(BUNDLED_DIR)/grpc-$(GRPC_VERSION)
+GTEST = $(GOOGLETEST)/googletest
 HTTP_PARSER = $(BUNDLED_DIR)/http-parser-$(HTTP_PARSER_VERSION)
 LIBEV = $(BUNDLED_DIR)/libev-$(LIBEV_VERSION)
 PICOJSON = $(BUNDLED_DIR)/picojson-$(PICOJSON_VERSION)
@@ -68,11 +71,16 @@ BUNDLED_DEPS = # Initialize BUNDLED_DEPENDENCIES so we can add to it.
 
 # Ensure bundled software is build properly.
 %-stamp:
-	@cd $(BUNDLED_DIR) && $(MAKE) $(AM_MAKEFLAGS) $(@F)
+	@cd $(BUNDLED_DIR) && $(MAKE) $(AM_MAKEFLAGS) $(@:$(BUNDLED_DIR)/%=%)
 
 if WITH_BUNDLED_BOOST
 BOOST_INCLUDE_FLAGS = -isystem $(BOOST)
 BUNDLED_DEPS += $(BOOST)-stamp
+endif
+
+if WITH_BUNDLED_CONCURRENTQUEUE
+CONCURRENTQUEUE_INCLUDE_FLAGS = -isystem $(CONCURRENTQUEUE)
+BUNDLED_DEPS += $(CONCURRENTQUEUE)-stamp
 endif
 
 if WITH_BUNDLED_ELFIO
@@ -104,6 +112,28 @@ $(LIB_GPERFTOOLS): $(GPERFTOOLS)-build-stamp
 BUNDLED_DEPS += $(GPERFTOOLS)-build-stamp
 endif
 
+if ENABLE_GRPC
+if WITH_BUNDLED_GRPC
+GRPC_INCLUDE_FLAGS = -I$(GRPC)/include
+LIB_GRPC = $(GRPC)/libs/opt/libgrpc++.a	\
+           $(GRPC)/libs/opt/libgrpc.a	\
+           $(GRPC)/libs/opt/libgpr.a	\
+           -lssl -lcrypto
+GRPC_CPP_PLUGIN = $(GRPC)/bins/opt/grpc_cpp_plugin
+
+# NOTE: We need to specify the dependency between Protobuf and gRPC
+# here, otherwise `make` might launch concurrent gRPC and Protobuf
+# builds, which in turn trigger two racy Protobuf builds.
+$(GRPC)-build-stamp: $(PROTOBUF)-build-stamp
+
+$(LIB_GRPC): $(GRPC)-build-stamp
+BUNDLED_DEPS += $(GRPC)-build-stamp
+else
+LIB_GRPC = -lgrpc++ -lgrpc -lgpr -lssl -lcrypto
+GRPC_CPP_PLUGIN = @GRPC_CXX_PLUGIN@
+endif
+endif
+
 if WITH_BUNDLED_HTTP_PARSER
 HTTP_PARSER_INCLUDE_FLAGS = -I$(HTTP_PARSER)
 LIB_HTTP_PARSER = $(BUNDLED_DIR)/libry_http_parser.la
@@ -133,7 +163,14 @@ BUNDLED_DEPS += $(PICOJSON)-stamp
 endif
 
 if WITH_BUNDLED_PROTOBUF
+PROTOBUF_INCLUDE_FLAGS = -I$(PROTOBUF)/src
+LIB_PROTOBUF = $(PROTOBUF)/src/libprotobuf.la
+PROTOC = $(PROTOBUF)/src/protoc
+$(LIB_PROTOBUF): $(PROTOBUF)-build-stamp
 BUNDLED_DEPS += $(PROTOBUF)-build-stamp
+else
+LIB_PROTOBUF = -lprotobuf
+PROTOC = @PROTOCOMPILER@
 endif
 
 if WITH_BUNDLED_STOUT
@@ -157,10 +194,13 @@ libprocess_la_SOURCES =		\
   src/decoder.hpp		\
   src/encoder.hpp		\
   src/event_loop.hpp		\
+  src/event_queue.hpp		\
   src/firewall.cpp		\
   src/gate.hpp			\
   src/help.cpp			\
   src/http.cpp			\
+  src/http_proxy.cpp		\
+  src/http_proxy.hpp		\
   src/io.cpp			\
   src/latch.cpp			\
   src/logging.cpp		\
@@ -173,21 +213,25 @@ libprocess_la_SOURCES =		\
   src/process.cpp		\
   src/process_reference.hpp	\
   src/reap.cpp			\
+  src/run_queue.hpp		\
+  src/semaphore.hpp		\
   src/socket.cpp		\
+  src/socket_manager.hpp	\
   src/subprocess.cpp		\
   src/subprocess_posix.cpp	\
+  src/subprocess_posix.hpp	\
   src/time.cpp			\
   src/timeseries.cpp
 
 if ENABLE_SSL
 libprocess_la_SOURCES +=	\
-    src/jwt.cpp			\
-    src/jwt_authenticator.cpp	\
-    src/libevent_ssl_socket.cpp	\
-    src/libevent_ssl_socket.hpp	\
-    src/openssl.cpp		\
-    src/openssl.hpp		\
-    src/ssl/utilities.cpp
+  src/jwt.cpp			\
+  src/jwt_authenticator.cpp	\
+  src/libevent_ssl_socket.cpp	\
+  src/libevent_ssl_socket.hpp	\
+  src/openssl.cpp		\
+  src/openssl.hpp		\
+  src/ssl/utilities.cpp
 endif
 
 
@@ -198,25 +242,33 @@ libprocess_la_CPPFLAGS =			\
   -DBUILD_DIR=\"$(LIBPROCESS_BUILD_DIR)\"	\
   -I$(srcdir)/include				\
   $(BOOST_INCLUDE_FLAGS)			\
+  $(CONCURRENTQUEUE_INCLUDE_FLAGS)		\
   $(ELFIO_INCLUDE_FLAGS)			\
   $(GLOG_INCLUDE_FLAGS)				\
   $(GPERFTOOLS_INCLUDE_FLAGS)			\
+  $(GRPC_INCLUDE_FLAGS)				\
   $(HTTP_PARSER_INCLUDE_FLAGS)			\
   $(LIB_EV_INCLUDE_FLAGS)			\
   $(PICOJSON_INCLUDE_FLAGS)			\
+  $(PROTOBUF_INCLUDE_FLAGS)			\
   $(STOUT_INCLUDE_FLAGS)			\
   $(AM_CPPFLAGS)
 
+if ENABLE_GRPC
+libprocess_la_SOURCES +=	\
+  src/grpc.cpp
+endif
+
 if ENABLE_LIBEVENT
 libprocess_la_SOURCES +=	\
-    src/libevent.hpp		\
-    src/libevent.cpp		\
-    src/libevent_poll.cpp
+  src/libevent.hpp		\
+  src/libevent.cpp		\
+  src/libevent_poll.cpp
 else
-  libprocess_la_SOURCES +=	\
-    src/libev.hpp		\
-    src/libev.cpp		\
-    src/libev_poll.cpp
+libprocess_la_SOURCES +=	\
+  src/libev.hpp			\
+  src/libev.cpp			\
+  src/libev_poll.cpp
 endif
 
 if ENABLE_STATIC_LIBPROCESS
@@ -238,6 +290,7 @@ check_PROGRAMS = libprocess-tests benchmarks
 libprocess_tests_SOURCES =					\
   src/tests/after_tests.cpp					\
   src/tests/collect_tests.cpp					\
+  src/tests/count_down_latch_tests.cpp				\
   src/tests/decoder_tests.cpp					\
   src/tests/encoder_tests.cpp					\
   src/tests/future_tests.cpp					\
@@ -253,9 +306,11 @@ libprocess_tests_SOURCES =					\
   src/tests/profiler_tests.cpp					\
   src/tests/queue_tests.cpp					\
   src/tests/reap_tests.cpp					\
+  src/tests/rwlock_tests.cpp					\
   src/tests/socket_tests.cpp					\
   src/tests/sequence_tests.cpp					\
   src/tests/shared_tests.cpp					\
+  src/tests/state_machine_tests.cpp				\
   src/tests/statistics_tests.cpp				\
   src/tests/subprocess_tests.cpp				\
   src/tests/system_tests.cpp					\
@@ -269,8 +324,22 @@ libprocess_tests_CPPFLAGS =		\
   $(libprocess_la_CPPFLAGS)
 
 libprocess_tests_LDADD =		\
+  $(LIB_GRPC)				\
   $(LIB_GMOCK)				\
+  $(LIB_PROTOBUF)			\
   libprocess.la
+
+if ENABLE_GRPC
+libprocess_tests_SOURCES +=		\
+  src/tests/grpc_tests.cpp		\
+  src/tests/grpc_tests.proto
+
+GRPC_TESTS_PROTOS =			\
+  grpc_tests.grpc.pb.cc			\
+  grpc_tests.grpc.pb.h			\
+  grpc_tests.pb.cc			\
+  grpc_tests.pb.h
+endif
 
 if ENABLE_SSL
 check_PROGRAMS += ssl-client
@@ -284,7 +353,12 @@ libprocess_tests_SOURCES +=		\
 endif
 
 benchmarks_SOURCES =			\
-  src/tests/benchmarks.cpp
+  src/tests/benchmarks.cpp		\
+  src/tests/benchmarks.proto
+
+BENCHMARKS_PROTOS =			\
+  benchmarks.pb.cc			\
+  benchmarks.pb.h
 
 benchmarks_CPPFLAGS =			\
   -I$(srcdir)/src			\
@@ -294,6 +368,7 @@ benchmarks_CPPFLAGS =			\
 
 benchmarks_LDADD =			\
   $(LIB_GMOCK)				\
+  $(LIB_PROTOBUF)			\
   libprocess.la
 
 # Used for testing remote links.
@@ -320,7 +395,30 @@ libprocess_tests_LDADD +=		\
   $(LIB_EV)
 endif
 
-BUILT_SOURCES = $(BUNDLED_DEPS)
+BUILT_SOURCES =				\
+  $(BUNDLED_DEPS)			\
+  $(BENCHMARKS_PROTOS)			\
+  $(GRPC_TESTS_PROTOS)
+
+nodist_benchmarks_SOURCES =		\
+  $(BENCHMARKS_PROTOS)
+
+nodist_libprocess_tests_SOURCES =	\
+  $(GRPC_TESTS_PROTOS)
+
+CLEANFILES =				\
+  $(BENCHMARKS_PROTOS)			\
+  $(GRPC_TESTS_PROTOS)
+
+
+# Targets for generating C++ protocol buffer and gRPC code for tests.
+%.pb.cc %.pb.h: src/tests/%.proto $(BUNDLED_DEPS)
+	$(PROTOC) -I$(<D) --cpp_out=. $<
+
+%.grpc.pb.cc %.grpc.pb.h: src/tests/%.proto $(BUNDLED_DEPS)
+	$(PROTOC) -I$(<D) --grpc_out=. $<			\
+	          --plugin=protoc-gen-grpc=$(GRPC_CPP_PLUGIN)
+
 
 # We use a check-local target for now to avoid the parallel test
 # runner that ships with newer versions of autotools.
@@ -329,7 +427,7 @@ BUILT_SOURCES = $(BUNDLED_DEPS)
 check-local: tests
 	$(TEST_DRIVER) ./libprocess-tests
 
-tests: all $(BUNDLED_DEPS)
+tests: all $(BUNDLED_DEPS) $(BENCHMARKS_PROTOS) $(GRPC_TESTS_PROTOS)
 	$(MAKE) $(AM_MAKEFLAGS) $(check_PROGRAMS)
 
 # TODO(benh): Fix shared builds (tests need libglog, libev, etc).

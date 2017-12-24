@@ -17,6 +17,8 @@
 #ifndef __MASTER_VALIDATION_HPP__
 #define __MASTER_VALIDATION_HPP__
 
+#include <vector>
+
 #include <google/protobuf/repeated_field.h>
 
 #include <mesos/mesos.hpp>
@@ -30,6 +32,8 @@
 
 #include <stout/error.hpp>
 #include <stout/option.hpp>
+
+#include "common/protobuf_utils.hpp"
 
 namespace mesos {
 namespace internal {
@@ -52,6 +56,20 @@ Option<Error> validate(
     const Option<process::http::authentication::Principal>& principal = None());
 
 } // namespace call {
+
+namespace message {
+
+// Validation helpers for internal Mesos protocol messages. This is a
+// best-effort validation, intended to prevent trivial attacks on the
+// protocol in deployments where the network between master and agents
+// is not secured. The longer term remedy for this is to make security
+// guarantees at the libprocess level that would prevent arbitrary UPID
+// impersonation (MESOS-7424).
+
+Option<Error> registerSlave(const RegisterSlaveMessage& message);
+Option<Error> reregisterSlave(const ReregisterSlaveMessage& message);
+
+} // namespace message {
 } // namespace master {
 
 
@@ -107,6 +125,14 @@ Option<Error> validate(
 
 namespace resource {
 
+// Functions in this namespace are only exposed for testing.
+namespace internal {
+
+Option<Error> validateSingleResourceProvider(
+    const google::protobuf::RepeatedPtrField<Resource>& resources);
+
+} // namespace internal {
+
 // Validates resources specified by frameworks.
 // NOTE: We cannot take 'Resources' here because invalid resources are
 // silently ignored within its constructor.
@@ -130,6 +156,9 @@ Option<Error> validateType(const ExecutorInfo& executor);
 Option<Error> validateResources(const ExecutorInfo& executor);
 
 } // namespace internal {
+
+Option<Error> validate(const ExecutorInfo& executor);
+
 } // namespace executor {
 
 
@@ -234,11 +263,14 @@ namespace operation {
 Option<Error> validate(
     const Offer::Operation::Reserve& reserve,
     const Option<process::http::authentication::Principal>& principal,
+    const protobuf::slave::Capabilities& agentCapabilities,
     const Option<FrameworkInfo>& frameworkInfo = None());
 
 
 // Validates the UNRESERVE operation.
-Option<Error> validate(const Offer::Operation::Unreserve& unreserve);
+Option<Error> validate(
+    const Offer::Operation::Unreserve& unreserve,
+    const Option<FrameworkInfo>& frameworkInfo = None());
 
 
 // Validates the CREATE operation. We need slave's checkpointed resources so
@@ -251,6 +283,7 @@ Option<Error> validate(
     const Offer::Operation::Create& create,
     const Resources& checkpointedResources,
     const Option<process::http::authentication::Principal>& principal,
+    const protobuf::slave::Capabilities& agentCapabilities,
     const Option<FrameworkInfo>& frameworkInfo = None());
 
 
@@ -262,7 +295,14 @@ Option<Error> validate(
     const Offer::Operation::Destroy& destroy,
     const Resources& checkpointedResources,
     const hashmap<FrameworkID, Resources>& usedResources,
-    const hashmap<FrameworkID, hashmap<TaskID, TaskInfo>>& pendingTasks);
+    const hashmap<FrameworkID, hashmap<TaskID, TaskInfo>>& pendingTasks,
+    const Option<FrameworkInfo>& frameworkInfo = None());
+
+
+Option<Error> validate(const Offer::Operation::CreateVolume& createVolume);
+Option<Error> validate(const Offer::Operation::DestroyVolume& destroyVolume);
+Option<Error> validate(const Offer::Operation::CreateBlock& createBlock);
+Option<Error> validate(const Offer::Operation::DestroyBlock& destroyBlock);
 
 } // namespace operation {
 

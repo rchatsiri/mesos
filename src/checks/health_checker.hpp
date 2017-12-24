@@ -18,22 +18,16 @@
 #define __HEALTH_CHECKER_HPP__
 
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include <mesos/mesos.hpp>
 
-#include <process/future.hpp>
+#include <process/http.hpp>
 #include <process/owned.hpp>
-#include <process/pid.hpp>
-#include <process/process.hpp>
-#include <process/protobuf.hpp>
-#include <process/time.hpp>
 
-#include <stout/duration.hpp>
+#include <stout/error.hpp>
 #include <stout/lambda.hpp>
-#include <stout/nothing.hpp>
-#include <stout/stopwatch.hpp>
+#include <stout/option.hpp>
 
 #include "messages/messages.hpp"
 
@@ -41,8 +35,8 @@ namespace mesos {
 namespace internal {
 namespace checks {
 
-// Forward declarations.
-class HealthCheckerProcess;
+class CheckerProcess;
+
 
 class HealthChecker
 {
@@ -51,7 +45,10 @@ public:
    * Attempts to create a `HealthChecker` object. In case of success, health
    * checking starts immediately after initialization.
    *
-   * @param check The protobuf message definition of health check.
+   * If the check is a command health check, the checker will fork a process,
+   * enter the task's namespaces, and execute the command.
+   *
+   * @param healthCheck The protobuf message definition of health check.
    * @param launcherDir A directory where Mesos helper binaries are located.
    * @param callback A callback HealthChecker uses to send health status
    *     updates to its owner (usually an executor).
@@ -69,90 +66,78 @@ public:
    * This class will then focus on interpreting and acting on the result.
    */
   static Try<process::Owned<HealthChecker>> create(
-      const HealthCheck& check,
+      const HealthCheck& healthCheck,
       const std::string& launcherDir,
       const lambda::function<void(const TaskHealthStatus&)>& callback,
       const TaskID& taskId,
       const Option<pid_t>& taskPid,
       const std::vector<std::string>& namespaces);
 
+  /**
+   * Attempts to create a `HealthChecker` object. In case of success, health
+   * checking starts immediately after initialization.
+   *
+   * If the check is a command health check, the checker will delegate the
+   * execution of the check to the Mesos agent via the
+   * `LaunchNestedContainerSession` API call.
+   *
+   * @param healthCheck The protobuf message definition of health check.
+   * @param launcherDir A directory where Mesos helper binaries are located.
+   * @param callback A callback HealthChecker uses to send health status
+   *     updates to its owner (usually an executor).
+   * @param taskId The TaskID of the target task.
+   * @param taskContainerId The ContainerID of the target task.
+   * @param agentURL The URL of the agent.
+   * @param authorizationHeader The authorization header the health checker
+   *     should use to authenticate with the agent operator API.
+   * @return A `HealthChecker` object or an error if `create` fails.
+   *
+   * @todo A better approach would be to return a stream of updates, e.g.,
+   * `process::Stream<TaskHealthStatus>` rather than invoking a callback.
+   */
+  static Try<process::Owned<HealthChecker>> create(
+      const HealthCheck& healthCheck,
+      const std::string& launcherDir,
+      const lambda::function<void(const TaskHealthStatus&)>& callback,
+      const TaskID& taskId,
+      const ContainerID& taskContainerId,
+      const process::http::URL& agentURL,
+      const Option<std::string>& authorizationHeader);
+
   ~HealthChecker();
 
-  /**
-   * Immediately stops health checking. Any in-flight health checks are dropped.
-   */
-  void stop();
+  // Idempotent helpers for pausing and resuming health checking.
+  void pause();
+  void resume();
 
 private:
-  explicit HealthChecker(process::Owned<HealthCheckerProcess> process);
-
-  process::Owned<HealthCheckerProcess> process;
-};
-
-
-class HealthCheckerProcess : public ProtobufProcess<HealthCheckerProcess>
-{
-public:
-  HealthCheckerProcess(
-      const HealthCheck& _check,
-      const std::string& _launcherDir,
-      const lambda::function<void(const TaskHealthStatus&)>& _callback,
+  HealthChecker(
+      const HealthCheck& _healthCheck,
       const TaskID& _taskId,
-      const Option<pid_t>& _taskPid,
-      const std::vector<std::string>& _namespaces);
+      const lambda::function<void(const TaskHealthStatus&)>& _callback,
+      const std::string& launcherDir,
+      const Option<pid_t>& taskPid,
+      const std::vector<std::string>& namespaces,
+      const Option<ContainerID>& taskContainerId,
+      const Option<process::http::URL>& agentURL,
+      const Option<std::string>& authorizationHeader,
+      bool commandCheckViaAgent);
 
-  virtual ~HealthCheckerProcess() {}
-
-protected:
-  virtual void initialize() override;
-
-private:
-  void failure(const std::string& message);
+  void processCheckResult(const Try<CheckStatusInfo>& result);
+  void failure();
   void success();
 
-  void performSingleCheck();
-  void processCheckResult(
-      const Stopwatch& stopwatch,
-      const process::Future<Nothing>& future);
-
-  process::Future<Nothing> commandHealthCheck();
-
-  process::Future<Nothing> httpHealthCheck();
-
-  process::Future<Nothing> _httpHealthCheck(
-      const std::tuple<
-          process::Future<Option<int>>,
-          process::Future<std::string>,
-          process::Future<std::string>>& t);
-
-  process::Future<Nothing> tcpHealthCheck();
-
-  process::Future<Nothing> _tcpHealthCheck(
-      const std::tuple<
-          process::Future<Option<int>>,
-          process::Future<std::string>,
-          process::Future<std::string>>& t);
-
-  void scheduleNext(const Duration& duration);
-
-  HealthCheck check;
-  Duration checkDelay;
-  Duration checkInterval;
-  Duration checkGracePeriod;
-  Duration checkTimeout;
-
-  // Contains a binary for TCP health checks.
-  const std::string launcherDir;
-
-  const lambda::function<void(const TaskHealthStatus&)> healthUpdateCallback;
+  const HealthCheck healthCheck;
+  const lambda::function<void(const TaskHealthStatus&)> callback;
+  const std::string name;
+  const process::Time startTime;
   const TaskID taskId;
-  const Option<pid_t> taskPid;
-  const std::vector<std::string> namespaces;
-  Option<lambda::function<pid_t(const lambda::function<int()>&)>> clone;
 
+  Duration checkGracePeriod;
   uint32_t consecutiveFailures;
-  process::Time startTime;
   bool initializing;
+
+  process::Owned<CheckerProcess> process;
 };
 
 

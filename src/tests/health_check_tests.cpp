@@ -32,9 +32,10 @@
 
 #include "tests/containerizer.hpp"
 #include "tests/flags.hpp"
-#include "tests/health_check_test_helper.hpp"
+#include "tests/http_server_test_helper.hpp"
 #include "tests/mesos.hpp"
 #include "tests/mock_docker.hpp"
+#include "tests/resources_utils.hpp"
 #include "tests/utils.hpp"
 
 #ifdef __linux__
@@ -220,6 +221,32 @@ TEST_F(HealthCheckTest, HealthCheckProtobufValidation)
     EXPECT_SOME(validate);
   }
 
+  // Duration parameters must be non-negative.
+  {
+    HealthCheck healthCheckProto;
+
+    healthCheckProto.set_type(HealthCheck::HTTP);
+    healthCheckProto.mutable_http()->set_port(8080);
+
+    healthCheckProto.set_delay_seconds(-1.0);
+    Option<Error> validate = validation::healthCheck(healthCheckProto);
+    EXPECT_SOME(validate);
+
+    healthCheckProto.set_delay_seconds(0.0);
+    healthCheckProto.set_interval_seconds(-1.0);
+    validate = validation::healthCheck(healthCheckProto);
+    EXPECT_SOME(validate);
+
+    healthCheckProto.set_interval_seconds(0.0);
+    healthCheckProto.set_timeout_seconds(-1.0);
+    validate = validation::healthCheck(healthCheckProto);
+    EXPECT_SOME(validate);
+
+    healthCheckProto.set_timeout_seconds(0.0);
+    validate = validation::healthCheck(healthCheckProto);
+    EXPECT_NONE(validate);
+  }
+
   // Command health check must specify an actual command in `command.value`.
   {
     HealthCheck healthCheckProto;
@@ -298,25 +325,33 @@ TEST_F(HealthCheckTest, HealthyTask)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   vector<TaskInfo> tasks =
     populateTasks(SLEEP_COMMAND(120), "exit 0", offers.get()[0]);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy));
 
   driver.launchTasks(offers.get()[0].id(), tasks);
+
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
 
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -370,7 +405,7 @@ TEST_F(HealthCheckTest, HealthyTask)
     ASSERT_SOME(parse);
 
     Result<JSON::Value> find = parse->find<JSON::Value>(
-        "frameworks[0].tasks[0].statuses[0].healthy");
+        "frameworks[0].tasks[0].statuses[1].healthy");
     EXPECT_SOME_TRUE(find);
   }
 
@@ -388,7 +423,7 @@ TEST_F(HealthCheckTest, HealthyTask)
     ASSERT_SOME(parse);
 
     Result<JSON::Value> find = parse->find<JSON::Value>(
-        "frameworks[0].executors[0].tasks[0].statuses[0].healthy");
+        "frameworks[0].executors[0].tasks[0].statuses[1].healthy");
     EXPECT_SOME_TRUE(find);
   }
 
@@ -438,7 +473,7 @@ TEST_F(HealthCheckTest, ROOT_HealthyTaskWithContainerImage)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   // Make use of 'populateTasks()' to avoid duplicate code.
   vector<TaskInfo> tasks =
@@ -458,20 +493,28 @@ TEST_F(HealthCheckTest, ROOT_HealthyTaskWithContainerImage)
   health->set_type(HealthCheck::COMMAND);
   health->mutable_command()->set_value("exit 0");
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy));
 
   driver.launchTasks(offers.get()[0].id(), {task});
+
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
 
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -489,7 +532,7 @@ TEST_F(HealthCheckTest, ROOT_HealthyTaskWithContainerImage)
     ASSERT_SOME(parse);
 
     Result<JSON::Value> find = parse->find<JSON::Value>(
-        "frameworks[0].tasks[0].statuses[0].healthy");
+        "frameworks[0].tasks[0].statuses[1].healthy");
     EXPECT_SOME_TRUE(find);
   }
 
@@ -507,7 +550,7 @@ TEST_F(HealthCheckTest, ROOT_HealthyTaskWithContainerImage)
     ASSERT_SOME(parse);
 
     Result<JSON::Value> find = parse->find<JSON::Value>(
-        "frameworks[0].executors[0].tasks[0].statuses[0].healthy");
+        "frameworks[0].executors[0].tasks[0].statuses[1].healthy");
     EXPECT_SOME_TRUE(find);
   }
 
@@ -519,7 +562,7 @@ TEST_F(HealthCheckTest, ROOT_HealthyTaskWithContainerImage)
 
 // This test creates a healthy task using the Docker executor and
 // verifies that the healthy status is reported to the scheduler.
-TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTask)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(HealthCheckTest, ROOT_DOCKER_DockerHealthyTask)
 {
   Shared<Docker> docker(new MockDocker(
       tests::flags.docker, tests::flags.docker_socket));
@@ -538,7 +581,7 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTask)
 
   slave::Flags agentFlags = CreateSlaveFlags();
 
-  Fetcher fetcher;
+  Fetcher fetcher(agentFlags);
 
   Try<ContainerLogger*> logger =
     ContainerLogger::create(agentFlags.container_logger);
@@ -570,7 +613,7 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTask)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
@@ -590,15 +633,17 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTask)
       containerInfo);
 
   Future<ContainerID> containerId;
-  EXPECT_CALL(containerizer, launch(_, _, _, _, _, _, _, _))
+  EXPECT_CALL(containerizer, launch(_, _, _, _))
     .WillOnce(DoAll(FutureArg<0>(&containerId),
                     Invoke(&containerizer,
                            &MockDockerContainerizer::_launch)));
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy));
 
@@ -606,11 +651,17 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTask)
 
   AWAIT_READY(containerId);
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -662,30 +713,45 @@ TEST_F(HealthCheckTest, HealthyTaskNonShell)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   CommandInfo command;
   command.set_shell(false);
-  command.set_value(TRUE_COMMAND);
-  command.add_arguments(TRUE_COMMAND);
+#ifdef __WINDOWS__
+  command.set_value(os::Shell::name);
+  command.add_arguments(os::Shell::arg0);
+  command.add_arguments(os::Shell::arg1);
+  command.add_arguments("exit 0");
+#else
+  command.set_value("true");
+  command.add_arguments("true");
+#endif // __WINDOWS
 
   vector<TaskInfo> tasks =
     populateTasks(SLEEP_COMMAND(120), command, offers.get()[0]);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy));
 
   driver.launchTasks(offers.get()[0].id(), tasks);
+
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->healthy());
 
   driver.stop();
@@ -718,7 +784,7 @@ TEST_F(HealthCheckTest, HealthStatusChange)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   // Create a temporary file.
   Try<string> temporaryPath = os::mktemp(path::join(os::getcwd(), "XXXXXX"));
@@ -732,12 +798,14 @@ TEST_F(HealthCheckTest, HealthStatusChange)
       0,
       3);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
   Future<TaskStatus> statusUnhealthy;
   Future<TaskStatus> statusHealthyAgain;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy))
     .WillOnce(FutureArg<1>(&statusUnhealthy))
@@ -746,19 +814,31 @@ TEST_F(HealthCheckTest, HealthStatusChange)
 
   driver.launchTasks(offers.get()[0].id(), tasks);
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->healthy());
 
   AWAIT_READY(statusUnhealthy);
   EXPECT_EQ(TASK_RUNNING, statusUnhealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusUnhealthy->reason());
   EXPECT_FALSE(statusUnhealthy->healthy());
 
   AWAIT_READY(statusHealthyAgain);
   EXPECT_EQ(TASK_RUNNING, statusHealthyAgain->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthyAgain->reason());
   EXPECT_TRUE(statusHealthyAgain->healthy());
 
   driver.stop();
@@ -769,7 +849,8 @@ TEST_F(HealthCheckTest, HealthStatusChange)
 // This test creates a task that uses the Docker executor and whose
 // health flaps. It then verifies that the health status updates are
 // sent to the framework scheduler.
-TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthStatusChange)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+    HealthCheckTest, ROOT_DOCKER_DockerHealthStatusChange)
 {
   Shared<Docker> docker(new MockDocker(
       tests::flags.docker, tests::flags.docker_socket));
@@ -788,7 +869,7 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthStatusChange)
 
   slave::Flags agentFlags = CreateSlaveFlags();
 
-  Fetcher fetcher;
+  Fetcher fetcher(agentFlags);
 
   Try<ContainerLogger*> logger =
     ContainerLogger::create(agentFlags.container_logger);
@@ -820,7 +901,7 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthStatusChange)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
@@ -859,17 +940,19 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthStatusChange)
       containerInfo);
 
   Future<ContainerID> containerId;
-  EXPECT_CALL(containerizer, launch(_, _, _, _, _, _, _, _))
+  EXPECT_CALL(containerizer, launch(_, _, _, _))
     .WillOnce(DoAll(FutureArg<0>(&containerId),
                     Invoke(&containerizer,
                            &MockDockerContainerizer::_launch)));
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusUnhealthy;
   Future<TaskStatus> statusHealthy;
   Future<TaskStatus> statusUnhealthyAgain;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusUnhealthy))
     .WillOnce(FutureArg<1>(&statusHealthy))
@@ -878,19 +961,31 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthStatusChange)
 
   driver.launchTasks(offers.get()[0].id(), tasks);
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusUnhealthy);
   EXPECT_EQ(TASK_RUNNING, statusUnhealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusUnhealthy->reason());
   EXPECT_FALSE(statusUnhealthy->healthy());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->healthy());
 
   AWAIT_READY(statusUnhealthyAgain);
   EXPECT_EQ(TASK_RUNNING, statusUnhealthyAgain->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusUnhealthyAgain->reason());
   EXPECT_FALSE(statusUnhealthyAgain->healthy());
 
   // Check the temporary file created in host still
@@ -947,12 +1042,13 @@ TEST_F(HealthCheckTest, ConsecutiveFailures)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   vector<TaskInfo> tasks = populateTasks(
     SLEEP_COMMAND(120), "exit 1", offers.get()[0], 0, 4);
 
   // Expecting four unhealthy updates and one final kill update.
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> status1;
   Future<TaskStatus> status2;
@@ -961,6 +1057,7 @@ TEST_F(HealthCheckTest, ConsecutiveFailures)
   Future<TaskStatus> statusKilled;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&status1))
     .WillOnce(FutureArg<1>(&status2))
@@ -970,23 +1067,38 @@ TEST_F(HealthCheckTest, ConsecutiveFailures)
 
   driver.launchTasks(offers.get()[0].id(), tasks);
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(status1);
   EXPECT_EQ(TASK_RUNNING, status1->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      status1->reason());
   EXPECT_FALSE(status1->healthy());
 
   AWAIT_READY(status2);
   EXPECT_EQ(TASK_RUNNING, status2->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      status2->reason());
   EXPECT_FALSE(status2->healthy());
 
   AWAIT_READY(status3);
   EXPECT_EQ(TASK_RUNNING, status3->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      status3->reason());
   EXPECT_FALSE(status3->healthy());
 
   AWAIT_READY(status4);
   EXPECT_EQ(TASK_RUNNING, status4->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      status4->reason());
   EXPECT_FALSE(status4->healthy());
 
   AWAIT_READY(statusKilled);
@@ -1024,7 +1136,7 @@ TEST_F(HealthCheckTest, EnvironmentSetup)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   map<string, string> env;
   env["STATUS"] = "0";
@@ -1032,20 +1144,28 @@ TEST_F(HealthCheckTest, EnvironmentSetup)
   vector<TaskInfo> tasks = populateTasks(
     SLEEP_COMMAND(120), "exit $STATUS", offers.get()[0], 0, None(), env);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+  .WillOnce(FutureArg<1>(&statusStarting))
   .WillOnce(FutureArg<1>(&statusRunning))
   .WillOnce(FutureArg<1>(&statusHealthy));
 
   driver.launchTasks(offers.get()[0].id(), tasks);
+
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
 
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->healthy());
 
   driver.stop();
@@ -1077,17 +1197,25 @@ TEST_F(HealthCheckTest, GracePeriod)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
+
+#ifndef __WINDOWS__
+  const string falseCommand = "false";
+#else
+  const string falseCommand = "cmd /C exit 1";
+#endif // __WINDOWS__
 
   // The health check for this task will always fail, but the grace period of
   // 9999 seconds should mask the failures.
   vector<TaskInfo> tasks = populateTasks(
-    SLEEP_COMMAND(2), "false", offers.get()[0], 9999);
+    SLEEP_COMMAND(2), falseCommand, offers.get()[0], 9999);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusFinished;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusFinished))
     .WillRepeatedly(Return());
@@ -1133,7 +1261,7 @@ TEST_F(HealthCheckTest, CheckCommandTimeout)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   vector<TaskInfo> tasks = populateTasks(
       SLEEP_COMMAND(120),
@@ -1146,22 +1274,30 @@ TEST_F(HealthCheckTest, CheckCommandTimeout)
       1);
 
   // Expecting one unhealthy update and one final kill update.
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusUnhealthy;
   Future<TaskStatus> statusKilled;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusUnhealthy))
     .WillOnce(FutureArg<1>(&statusKilled));
 
   driver.launchTasks(offers.get()[0].id(), tasks);
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusUnhealthy);
   EXPECT_EQ(TASK_RUNNING, statusUnhealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusUnhealthy->reason());
   EXPECT_FALSE(statusUnhealthy->healthy());
 
   AWAIT_READY(statusKilled);
@@ -1202,7 +1338,7 @@ TEST_F(HealthCheckTest, HealthyToUnhealthyTransitionWithinGracePeriod)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   // Create a temporary file.
   const string tmpPath = path::join(os::getcwd(), "healthyToUnhealthy");
@@ -1214,11 +1350,13 @@ TEST_F(HealthCheckTest, HealthyToUnhealthyTransitionWithinGracePeriod)
       9999,
       0);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
   Future<TaskStatus> statusUnhealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy))
     .WillOnce(FutureArg<1>(&statusUnhealthy))
@@ -1226,16 +1364,25 @@ TEST_F(HealthCheckTest, HealthyToUnhealthyTransitionWithinGracePeriod)
 
   driver.launchTasks(offers.get()[0].id(), tasks);
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
   AWAIT_READY(statusUnhealthy);
   EXPECT_EQ(TASK_RUNNING, statusUnhealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusUnhealthy->reason());
   EXPECT_TRUE(statusUnhealthy->has_healthy());
   EXPECT_FALSE(statusUnhealthy->healthy());
 
@@ -1245,7 +1392,7 @@ TEST_F(HealthCheckTest, HealthyToUnhealthyTransitionWithinGracePeriod)
 
 
 // Tests a healthy non-contained task via HTTP.
-TEST_F_TEMP_DISABLED_ON_WINDOWS(HealthCheckTest, HealthyTaskViaHTTP)
+TEST_F(HealthCheckTest, HealthyTaskViaHTTP)
 {
   master::Flags masterFlags = CreateMasterFlags();
   masterFlags.allocation_interval = Milliseconds(50);
@@ -1270,7 +1417,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(HealthCheckTest, HealthyTaskViaHTTP)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   const uint16_t testPort = getFreePort().get();
 
@@ -1279,7 +1426,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(HealthCheckTest, HealthyTaskViaHTTP)
   const string command = strings::format(
       "%s %s --ip=127.0.0.1 --port=%u",
       getTestHelperPath("test-helper"),
-      HealthCheckTestHelper::NAME,
+      HttpServerTestHelper::NAME,
       testPort).get();
 
   TaskInfo task = createTask(offers.get()[0], command);
@@ -1296,21 +1443,29 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(HealthCheckTest, HealthyTaskViaHTTP)
 
   task.mutable_health_check()->CopyFrom(healthCheck);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy))
     .WillRepeatedly(Return()); // Ignore subsequent updates.
 
   driver.launchTasks(offers.get()[0].id(), {task});
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -1327,10 +1482,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(HealthCheckTest, HealthyTaskViaHTTP)
 // with the difference being the health check type is not set.
 //
 // TODO(haosdent): Remove this after the deprecation cycle which starts in 2.0.
-// TODO(hausdorff): Enable this. Mesos builds its own `curl.exe`, since it
-// can't rely on a package manager to get it. We need to make this test use
-// that executable.
-TEST_F_TEMP_DISABLED_ON_WINDOWS(HealthCheckTest, HealthyTaskViaHTTPWithoutType)
+TEST_F(HealthCheckTest, HealthyTaskViaHTTPWithoutType)
 {
   master::Flags masterFlags = CreateMasterFlags();
   masterFlags.allocation_interval = Milliseconds(50);
@@ -1355,7 +1507,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(HealthCheckTest, HealthyTaskViaHTTPWithoutType)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   const uint16_t testPort = getFreePort().get();
 
@@ -1364,7 +1516,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(HealthCheckTest, HealthyTaskViaHTTPWithoutType)
   const string command = strings::format(
       "%s %s --ip=127.0.0.1 --port=%u",
       getTestHelperPath("test-helper"),
-      HealthCheckTestHelper::NAME,
+      HttpServerTestHelper::NAME,
       testPort).get();
 
   TaskInfo task = createTask(offers.get()[0], command);
@@ -1380,21 +1532,29 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(HealthCheckTest, HealthyTaskViaHTTPWithoutType)
 
   task.mutable_health_check()->CopyFrom(healthCheck);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy))
     .WillRepeatedly(Return()); // Ignore subsequent updates.
 
   driver.launchTasks(offers.get()[0].id(), {task});
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -1432,7 +1592,7 @@ TEST_F(HealthCheckTest, HealthyTaskViaTCP)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   const uint16_t testPort = getFreePort().get();
 
@@ -1441,7 +1601,7 @@ TEST_F(HealthCheckTest, HealthyTaskViaTCP)
   const string command = strings::format(
       "%s %s --ip=127.0.0.1 --port=%u",
       getTestHelperPath("test-helper"),
-      HealthCheckTestHelper::NAME,
+      HttpServerTestHelper::NAME,
       testPort).get();
 
   TaskInfo task = createTask(offers.get()[0], command);
@@ -1457,21 +1617,29 @@ TEST_F(HealthCheckTest, HealthyTaskViaTCP)
 
   task.mutable_health_check()->CopyFrom(healthCheck);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy))
     .WillRepeatedly(Return()); // Ignore subsequent updates.
 
   driver.launchTasks(offers.get()[0].id(), {task});
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -1512,7 +1680,7 @@ TEST_F(HealthCheckTest, ROOT_INTERNET_CURL_HealthyTaskViaHTTPWithContainerImage)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   const uint16_t testPort = getFreePort().get();
 
@@ -1542,21 +1710,29 @@ TEST_F(HealthCheckTest, ROOT_INTERNET_CURL_HealthyTaskViaHTTPWithContainerImage)
 
   task.mutable_health_check()->CopyFrom(healthCheck);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy))
     .WillRepeatedly(Return()); // Ignore subsequent updates.
 
   driver.launchTasks(offers.get()[0].id(), {task});
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -1597,7 +1773,7 @@ TEST_F(HealthCheckTest,
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   const uint16_t testPort = getFreePort().get();
 
@@ -1629,15 +1805,20 @@ TEST_F(HealthCheckTest,
 
   task.mutable_health_check()->CopyFrom(healthCheck);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy))
     .WillRepeatedly(Return()); // Ignore subsequent updates.
 
   driver.launchTasks(offers.get()[0].id(), {task});
+
+  AWAIT_READY_FOR(statusStarting, Seconds(60));
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
 
   // Increase time here to wait for pulling image finish.
   AWAIT_READY_FOR(statusRunning, Seconds(60));
@@ -1645,6 +1826,9 @@ TEST_F(HealthCheckTest,
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -1689,7 +1873,7 @@ TEST_F(HealthCheckTest, ROOT_INTERNET_CURL_HealthyTaskViaTCPWithContainerImage)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
   const uint16_t testPort = getFreePort().get();
 
@@ -1719,21 +1903,29 @@ TEST_F(HealthCheckTest, ROOT_INTERNET_CURL_HealthyTaskViaTCPWithContainerImage)
 
   task.mutable_health_check()->CopyFrom(healthCheck);
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy))
     .WillRepeatedly(Return()); // Ignore subsequent updates.
 
   driver.launchTasks(offers.get()[0].id(), {task});
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -1742,9 +1934,317 @@ TEST_F(HealthCheckTest, ROOT_INTERNET_CURL_HealthyTaskViaTCPWithContainerImage)
 }
 
 
-// Tests a healthy docker task via HTTP. To emulate a task responsive
-// to HTTP health checks, starts Netcat in the docker "alpine" image.
-TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTP)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+    HealthCheckTest, DefaultExecutorCommandHealthCheck)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  slave::Flags flags = CreateSlaveFlags();
+
+#ifndef USE_SSL_SOCKET
+  // Set permissive ACLs in the agent so that the local authorizer will be
+  // loaded and implicit executor authorization will be tested.
+  ACLs acls;
+  acls.set_permissive(true);
+
+  flags.acls = acls;
+#endif // USE_SSL_SOCKET
+
+  Fetcher fetcher(flags);
+
+  // We have to explicitly create a `Containerizer` in non-local mode,
+  // because `LaunchNestedContainerSession` (used by command health
+  // checks) tries to start a IO switchboard, which doesn't work in
+  // local mode yet.
+  Try<MesosContainerizer*> _containerizer =
+    MesosContainerizer::create(flags, false, &fetcher);
+
+  ASSERT_SOME(_containerizer);
+
+  Owned<slave::Containerizer> containerizer(_containerizer.get());
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  Try<Owned<cluster::Slave>> agent =
+    StartSlave(detector.get(), containerizer.get(), flags);
+  ASSERT_SOME(agent);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+    &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  Future<FrameworkID> frameworkId;
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .WillOnce(FutureArg<1>(&frameworkId));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(frameworkId);
+
+  AWAIT_READY(offers);
+  ASSERT_FALSE(offers->empty());
+
+  Future<TaskStatus> statusStarting;
+  Future<TaskStatus> statusRunning;
+  Future<TaskStatus> statusHealthy;
+
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
+    .WillOnce(FutureArg<1>(&statusRunning))
+    .WillOnce(FutureArg<1>(&statusHealthy));
+
+  TaskInfo task = createTask(offers->front(), "sleep 120");
+
+  HealthCheck healthCheck;
+
+  healthCheck.set_type(HealthCheck::COMMAND);
+  healthCheck.mutable_command()->set_value("exit $STATUS");
+  healthCheck.set_delay_seconds(0);
+  healthCheck.set_interval_seconds(0);
+  healthCheck.set_grace_period_seconds(0);
+
+  Environment::Variable* variable = healthCheck.mutable_command()->
+    mutable_environment()->mutable_variables()->Add();
+  variable->set_name("STATUS");
+  variable->set_value("0");
+
+  task.mutable_health_check()->CopyFrom(healthCheck);
+
+  Resources executorResources =
+    allocatedResources(Resources::parse("cpus:0.1;mem:32;disk:32").get(), "*");
+
+  task.mutable_resources()->CopyFrom(task.resources() - executorResources);
+
+  TaskGroupInfo taskGroup;
+  taskGroup.add_tasks()->CopyFrom(task);
+
+  ExecutorInfo executor;
+  executor.mutable_executor_id()->set_value("default");
+  executor.set_type(ExecutorInfo::DEFAULT);
+  executor.mutable_framework_id()->CopyFrom(frameworkId.get());
+  executor.mutable_resources()->CopyFrom(executorResources);
+  executor.mutable_shutdown_grace_period()->set_nanoseconds(Seconds(10).ns());
+
+  driver.acceptOffers(
+      {offers->front().id()}, {LAUNCH_GROUP(executor, taskGroup)});
+
+  AWAIT_READY(statusRunning);
+  EXPECT_EQ(TASK_STARTING, statusStarting.get().state());
+
+  AWAIT_READY(statusRunning);
+  EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
+
+  AWAIT_READY(statusHealthy);
+  EXPECT_EQ(TASK_RUNNING, statusHealthy.get().state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
+  EXPECT_TRUE(statusHealthy.get().has_healthy());
+  EXPECT_TRUE(statusHealthy.get().healthy());
+
+  Future<hashset<ContainerID>> containerIds = containerizer->containers();
+
+  AWAIT_READY(containerIds);
+
+  driver.stop();
+  driver.join();
+
+  // Cleanup all mesos launched containers.
+  foreach (const ContainerID& containerId, containerIds.get()) {
+    AWAIT_READY(containerizer->wait(containerId));
+  }
+}
+
+
+// Tests a healthy docker task via CMD health checks using the
+// DefaultExecutor.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+    HealthCheckTest, DefaultExecutorWithDockerImageCommandHealthCheck)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  slave::Flags flags = CreateSlaveFlags();
+
+#ifndef USE_SSL_SOCKET
+  // Set permissive ACLs in the agent so that the local authorizer will be
+  // loaded and implicit executor authorization will be tested.
+  ACLs acls;
+  acls.set_permissive(true);
+
+  flags.acls = acls;
+#endif // USE_SSL_SOCKET
+
+  Fetcher fetcher(flags);
+
+  // We have to explicitly create a `Containerizer` in non-local mode,
+  // because `LaunchNestedContainerSession` (used by command health
+  // checks) tries to start a IO switchboard, which doesn't work in
+  // local mode yet.
+  Try<MesosContainerizer*> _containerizer =
+    MesosContainerizer::create(flags, false, &fetcher);
+
+  ASSERT_SOME(_containerizer);
+
+  Owned<slave::Containerizer> containerizer(_containerizer.get());
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  Try<Owned<cluster::Slave>> agent =
+    StartSlave(detector.get(), containerizer.get(), flags);
+  ASSERT_SOME(agent);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+    &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  Future<FrameworkID> frameworkId;
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .WillOnce(FutureArg<1>(&frameworkId));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(frameworkId);
+
+  AWAIT_READY(offers);
+  ASSERT_FALSE(offers->empty());
+
+  Future<TaskStatus> statusStarting;
+  Future<TaskStatus> statusRunning;
+  Future<TaskStatus> statusHealthy;
+
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
+    .WillOnce(FutureArg<1>(&statusRunning))
+    .WillOnce(FutureArg<1>(&statusHealthy));
+
+  TaskInfo task = createTask(offers->front(), "sleep 120");
+
+  // TODO(tnachen): Use local image to test if possible.
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::MESOS);
+  containerInfo.mutable_docker()->set_image("alpine");
+
+  task.mutable_container()->CopyFrom(containerInfo);
+
+  HealthCheck healthCheck;
+
+  healthCheck.set_type(HealthCheck::COMMAND);
+  healthCheck.mutable_command()->set_value("exit $STATUS");
+  healthCheck.set_delay_seconds(0);
+  healthCheck.set_interval_seconds(0);
+  healthCheck.set_grace_period_seconds(0);
+
+  Environment::Variable* variable = healthCheck.mutable_command()->
+    mutable_environment()->mutable_variables()->Add();
+  variable->set_name("STATUS");
+  variable->set_value("0");
+
+  task.mutable_health_check()->CopyFrom(healthCheck);
+
+  Resources executorResources =
+    allocatedResources(Resources::parse("cpus:0.1;mem:32;disk:32").get(), "*");
+
+  task.mutable_resources()->CopyFrom(task.resources() - executorResources);
+
+  TaskGroupInfo taskGroup;
+  taskGroup.add_tasks()->CopyFrom(task);
+
+  ExecutorInfo executor;
+  executor.mutable_executor_id()->set_value("default");
+  executor.set_type(ExecutorInfo::DEFAULT);
+  executor.mutable_framework_id()->CopyFrom(frameworkId.get());
+  executor.mutable_resources()->CopyFrom(executorResources);
+  executor.mutable_shutdown_grace_period()->set_nanoseconds(Seconds(10).ns());
+
+  driver.acceptOffers(
+      {offers->front().id()}, {LAUNCH_GROUP(executor, taskGroup)});
+
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting.get().state());
+
+  AWAIT_READY(statusRunning);
+  EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
+
+  AWAIT_READY(statusHealthy);
+  EXPECT_EQ(TASK_RUNNING, statusHealthy.get().state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
+  EXPECT_TRUE(statusHealthy.get().has_healthy());
+  EXPECT_TRUE(statusHealthy.get().healthy());
+
+  Future<hashset<ContainerID>> containerIds = containerizer->containers();
+
+  AWAIT_READY(containerIds);
+
+  driver.stop();
+  driver.join();
+
+  // Cleanup all mesos launched containers.
+  foreach (const ContainerID& containerId, containerIds.get()) {
+    AWAIT_READY(containerizer->wait(containerId));
+  }
+}
+
+
+// Fixture for testing TCP/HTTP(S) health check support
+// for Docker containers on Docker user network.
+class DockerContainerizerHealthCheckTest
+  : public MesosTest,
+    public ::testing::WithParamInterface<NetworkInfo::Protocol>
+{
+protected:
+  virtual void SetUp()
+  {
+    createDockerIPv6UserNetwork();
+  }
+
+  virtual void TearDown()
+  {
+    Try<Owned<Docker>> docker = Docker::create(
+        tests::flags.docker,
+        tests::flags.docker_socket,
+        false);
+
+    ASSERT_SOME(docker);
+
+    Future<std::list<Docker::Container>> containers =
+      docker.get()->ps(true, slave::DOCKER_NAME_PREFIX);
+
+    AWAIT_READY(containers);
+
+    // Cleanup all mesos launched containers.
+    foreach (const Docker::Container& container, containers.get()) {
+      AWAIT_READY_FOR(docker.get()->rm(container.id, true), Seconds(30));
+    }
+
+    removeDockerIPv6UserNetwork();
+  }
+};
+
+
+// The tests are parameterized by the network protocol.
+INSTANTIATE_TEST_CASE_P(
+    NetworkProtocol,
+    DockerContainerizerHealthCheckTest,
+    ::testing::Values(NetworkInfo::IPv4, NetworkInfo::IPv6));
+
+
+// Tests a healthy Docker task via HTTP. To emulate a task responsive
+// to HTTP health checks, starts Netcat in the Docker "alpine" image.
+TEST_P_TEMP_DISABLED_ON_WINDOWS(
+    DockerContainerizerHealthCheckTest,
+    ROOT_DOCKER_USERNETWORK_HealthyTaskViaHTTP)
 {
   Shared<Docker> docker(new MockDocker(
       tests::flags.docker, tests::flags.docker_socket));
@@ -1754,7 +2254,7 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTP)
 
   slave::Flags agentFlags = CreateSlaveFlags();
 
-  Fetcher fetcher;
+  Fetcher fetcher(agentFlags);
 
   Try<ContainerLogger*> logger =
     ContainerLogger::create(agentFlags.container_logger);
@@ -1785,25 +2285,23 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTP)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
-
-  const uint16_t testPort = getFreePort().get();
+  ASSERT_FALSE(offers->empty());
 
   // Use Netcat to launch a HTTP server.
-  const string command = strings::format(
-      "nc -lk -p %u -e echo -e \"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\"",
-      testPort).get();
+  TaskInfo task = createTask(
+      offers.get()[0],
+      "nc -lk -p 80 -e echo -e \"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\"");
 
-  TaskInfo task = createTask(offers.get()[0], command);
-
-  // The docker container runs in bridge network mode.
-  //
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
   containerInfo.mutable_docker()->set_image("alpine");
-  containerInfo.mutable_docker()->set_network(
-      ContainerInfo::DockerInfo::BRIDGE);
+  containerInfo.mutable_docker()->set_network(ContainerInfo::DockerInfo::USER);
+
+  // Setup the Docker IPv6 network.
+  NetworkInfo networkInfo;
+  networkInfo.set_name(DOCKER_IPv6_NETWORK);
+  containerInfo.add_network_infos()->CopyFrom(networkInfo);
 
   task.mutable_container()->CopyFrom(containerInfo);
 
@@ -1811,7 +2309,8 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTP)
   // launch Netcat to serve requests.
   HealthCheck healthCheck;
   healthCheck.set_type(HealthCheck::HTTP);
-  healthCheck.mutable_http()->set_port(testPort);
+  healthCheck.mutable_http()->set_port(80);
+  healthCheck.mutable_http()->set_protocol(GetParam());
   healthCheck.set_delay_seconds(0);
   healthCheck.set_interval_seconds(0);
   healthCheck.set_grace_period_seconds(15);
@@ -1819,15 +2318,17 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTP)
   task.mutable_health_check()->CopyFrom(healthCheck);
 
   Future<ContainerID> containerId;
-  EXPECT_CALL(containerizer, launch(_, _, _, _, _, _, _, _))
+  EXPECT_CALL(containerizer, launch(_, _, _, _))
     .WillOnce(DoAll(FutureArg<0>(&containerId),
                     Invoke(&containerizer,
                            &MockDockerContainerizer::_launch)));
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy))
     .WillRepeatedly(Return()); // Ignore subsequent updates.
@@ -1836,11 +2337,18 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTP)
 
   AWAIT_READY(containerId);
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
+
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -1852,26 +2360,15 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTP)
 
   AWAIT_READY(termination);
   EXPECT_SOME(termination.get());
-
-  agent.get()->terminate();
-  agent->reset();
-
-  Future<std::list<Docker::Container>> containers =
-    docker->ps(true, slave::DOCKER_NAME_PREFIX);
-
-  AWAIT_READY(containers);
-
-  // Clean up all mesos launched docker containers.
-  foreach (const Docker::Container& container, containers.get()) {
-    AWAIT_READY_FOR(docker->rm(container.id, true), Seconds(30));
-  }
 }
 
 
-// Tests a healthy docker task via HTTPS. To emulate a task responsive
-// to HTTPS health checks, starts an HTTPS server in the docker
-// "haosdent/https-server" image.
-TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTPS)
+// Tests a healthy Docker task via HTTPS. To emulate a task
+// responsive to HTTPS health checks, starts an HTTPS server
+// in the Docker "zhq527725/https-server" image.
+TEST_P_TEMP_DISABLED_ON_WINDOWS(
+    DockerContainerizerHealthCheckTest,
+    ROOT_DOCKER_USERNETWORK_HealthyTaskViaHTTPS)
 {
   Shared<Docker> docker(new MockDocker(
       tests::flags.docker, tests::flags.docker_socket));
@@ -1881,7 +2378,7 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTPS)
 
   slave::Flags agentFlags = CreateSlaveFlags();
 
-  Fetcher fetcher;
+  Fetcher fetcher(agentFlags);
 
   Try<ContainerLogger*> logger =
     ContainerLogger::create(agentFlags.container_logger);
@@ -1912,26 +2409,25 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTPS)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
+  ASSERT_FALSE(offers->empty());
 
-  const uint16_t testPort = getFreePort().get();
+  TaskInfo task = createTask(
+      offers.get()[0],
+      "python https_server.py 443");
 
-  const string command = strings::format(
-      "python https_server.py %u",
-      testPort).get();
-
-  TaskInfo task = createTask(offers.get()[0], command);
-
-  // The docker container runs in bridge network mode.
-  // Refer to https://github.com/haosdent/https-server/ for how the
-  // docker image `haosdent/https-server` works.
+  // Refer to https://github.com/qianzhangxa/https-server for
+  // how the Docker image `zhq527725/https-server` works.
   //
-  // TODO(haosdent): Use local image to test if possible.
+  // TODO(qianzhang): Use local image to test if possible.
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
-  containerInfo.mutable_docker()->set_image("haosdent/https-server");
-  containerInfo.mutable_docker()->set_network(
-      ContainerInfo::DockerInfo::BRIDGE);
+  containerInfo.mutable_docker()->set_image("zhq527725/https-server");
+  containerInfo.mutable_docker()->set_network(ContainerInfo::DockerInfo::USER);
+
+  // Setup the Docker IPv6 network.
+  NetworkInfo networkInfo;
+  networkInfo.set_name(DOCKER_IPv6_NETWORK);
+  containerInfo.add_network_infos()->CopyFrom(networkInfo);
 
   task.mutable_container()->CopyFrom(containerInfo);
 
@@ -1939,8 +2435,9 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTPS)
   // launch the HTTPS server to serve requests.
   HealthCheck healthCheck;
   healthCheck.set_type(HealthCheck::HTTP);
-  healthCheck.mutable_http()->set_port(testPort);
+  healthCheck.mutable_http()->set_port(443);
   healthCheck.mutable_http()->set_scheme("https");
+  healthCheck.mutable_http()->set_protocol(GetParam());
   healthCheck.set_delay_seconds(0);
   healthCheck.set_interval_seconds(0);
   healthCheck.set_grace_period_seconds(15);
@@ -1948,15 +2445,17 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTPS)
   task.mutable_health_check()->CopyFrom(healthCheck);
 
   Future<ContainerID> containerId;
-  EXPECT_CALL(containerizer, launch(_, _, _, _, _, _, _, _))
+  EXPECT_CALL(containerizer, launch(_, _, _, _))
     .WillOnce(DoAll(FutureArg<0>(&containerId),
                     Invoke(&containerizer,
                            &MockDockerContainerizer::_launch)));
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy))
     .WillRepeatedly(Return()); // Ignore subsequent updates.
@@ -1965,12 +2464,18 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTPS)
 
   AWAIT_READY(containerId);
 
+  AWAIT_READY_FOR(statusStarting, Seconds(60));
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   // Increase time here to wait for pulling image finish.
   AWAIT_READY_FOR(statusRunning, Seconds(60));
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -1982,28 +2487,18 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaHTTPS)
 
   AWAIT_READY(termination);
   EXPECT_SOME(termination.get());
-
-  agent.get()->terminate();
-  agent->reset();
-
-  Future<std::list<Docker::Container>> containers =
-    docker->ps(true, slave::DOCKER_NAME_PREFIX);
-
-  AWAIT_READY(containers);
-
-  // Clean up all mesos launched docker containers.
-  foreach (const Docker::Container& container, containers.get()) {
-    AWAIT_READY_FOR(docker->rm(container.id, true), Seconds(30));
-  }
 }
 
 
-// Tests a healthy docker task via TCP. To emulate a task responsive
-// to TCP health checks, starts Netcat in the docker "alpine" image.
+// Tests a healthy Docker task via TCP. To emulate a task responsive
+// to TCP health checks, starts Netcat in the Docker "alpine" image.
 //
-// NOTE: This test is almost identical to ROOT_DOCKER_DockerHealthyTaskViaHTTP
+// NOTE:
+// This test is almost identical to ROOT_DOCKER_USERNETWORK_HealthyTaskViaHTTP
 // with the difference being TCP health check.
-TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaTCP)
+TEST_P_TEMP_DISABLED_ON_WINDOWS(
+    DockerContainerizerHealthCheckTest,
+    ROOT_DOCKER_USERNETWORK_HealthyTaskViaTCP)
 {
   Shared<Docker> docker(new MockDocker(
       tests::flags.docker, tests::flags.docker_socket));
@@ -2013,7 +2508,7 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaTCP)
 
   slave::Flags agentFlags = CreateSlaveFlags();
 
-  Fetcher fetcher;
+  Fetcher fetcher(agentFlags);
 
   Try<ContainerLogger*> logger =
     ContainerLogger::create(agentFlags.container_logger);
@@ -2044,25 +2539,23 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaTCP)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers->size());
-
-  const uint16_t testPort = getFreePort().get();
+  ASSERT_FALSE(offers->empty());
 
   // Use Netcat to launch a HTTP server.
-  const string command = strings::format(
-      "nc -lk -p %u -e echo -e \"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\"",
-      testPort).get();
+  TaskInfo task = createTask(
+      offers.get()[0],
+      "nc -lk -p 80 -e echo -e \"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\"");
 
-  TaskInfo task = createTask(offers.get()[0], command);
-
-  // The docker container runs in bridge network mode.
-  //
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
   containerInfo.mutable_docker()->set_image("alpine");
-  containerInfo.mutable_docker()->set_network(
-      ContainerInfo::DockerInfo::BRIDGE);
+  containerInfo.mutable_docker()->set_network(ContainerInfo::DockerInfo::USER);
+
+  // Setup the Docker IPv6 network.
+  NetworkInfo networkInfo;
+  networkInfo.set_name(DOCKER_IPv6_NETWORK);
+  containerInfo.add_network_infos()->CopyFrom(networkInfo);
 
   task.mutable_container()->CopyFrom(containerInfo);
 
@@ -2070,7 +2563,8 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaTCP)
   // launch Netcat to serve requests.
   HealthCheck healthCheck;
   healthCheck.set_type(HealthCheck::TCP);
-  healthCheck.mutable_tcp()->set_port(testPort);
+  healthCheck.mutable_tcp()->set_port(80);
+  healthCheck.mutable_tcp()->set_protocol(GetParam());
   healthCheck.set_delay_seconds(0);
   healthCheck.set_interval_seconds(0);
   healthCheck.set_grace_period_seconds(15);
@@ -2078,15 +2572,17 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaTCP)
   task.mutable_health_check()->CopyFrom(healthCheck);
 
   Future<ContainerID> containerId;
-  EXPECT_CALL(containerizer, launch(_, _, _, _, _, _, _, _))
+  EXPECT_CALL(containerizer, launch(_, _, _, _))
     .WillOnce(DoAll(FutureArg<0>(&containerId),
                     Invoke(&containerizer,
                            &MockDockerContainerizer::_launch)));
 
+  Future<TaskStatus> statusStarting;
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusHealthy;
 
   EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
     .WillOnce(FutureArg<1>(&statusRunning))
     .WillOnce(FutureArg<1>(&statusHealthy))
     .WillRepeatedly(Return()); // Ignore subsequent updates.
@@ -2095,11 +2591,17 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaTCP)
 
   AWAIT_READY(containerId);
 
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
   AWAIT_READY(statusRunning);
   EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusHealthy);
   EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
   EXPECT_TRUE(statusHealthy->has_healthy());
   EXPECT_TRUE(statusHealthy->healthy());
 
@@ -2111,19 +2613,6 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskViaTCP)
 
   AWAIT_READY(termination);
   EXPECT_SOME(termination.get());
-
-  agent.get()->terminate();
-  agent->reset();
-
-  Future<std::list<Docker::Container>> containers =
-    docker->ps(true, slave::DOCKER_NAME_PREFIX);
-
-  AWAIT_READY(containers);
-
-  // Clean up all mesos launched docker containers.
-  foreach (const Docker::Container& container, containers.get()) {
-    AWAIT_READY_FOR(docker->rm(container.id, true), Seconds(30));
-  }
 }
 
 } // namespace tests {

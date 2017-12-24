@@ -39,15 +39,18 @@
 #include <stout/hashset.hpp>
 #include <stout/numify.hpp>
 #include <stout/os.hpp>
-#include <stout/os/environment.hpp>
-#include <stout/os/int_fd.hpp>
-#include <stout/os/kill.hpp>
-#include <stout/os/killtree.hpp>
-#include <stout/os/write.hpp>
 #include <stout/stopwatch.hpp>
 #include <stout/strings.hpp>
 #include <stout/try.hpp>
 #include <stout/uuid.hpp>
+
+#include <stout/os/environment.hpp>
+#include <stout/os/int_fd.hpp>
+#include <stout/os/kill.hpp>
+#include <stout/os/killtree.hpp>
+#include <stout/os/realpath.hpp>
+#include <stout/os/stat.hpp>
+#include <stout/os/write.hpp>
 
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <stout/os/sysctl.hpp>
@@ -61,6 +64,8 @@ using os::Exec;
 using os::Fork;
 using os::Process;
 using os::ProcessTree;
+
+using os::stat::FollowSymlink;
 
 using std::list;
 using std::set;
@@ -205,16 +210,13 @@ TEST_F(OsTest, Nonblock)
 #endif // __WINDOWS__
 
 
-// TODO(hausdorff): Fix this issue and enable the test on Windows. It fails
-// because `os::size` is not following symlinks correctly on Windows. See
-// MESOS-5939.
 // Tests whether a file's size is reported by os::stat::size as expected.
 // Tests all four combinations of following a link or not and of a file
 // or a link as argument. Also tests that an error is returned for a
 // non-existing file.
-TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Size)
+TEST_F(OsTest, SYMLINK_Size)
 {
-  const string file = path::join(os::getcwd(), UUID::random().toString());
+  const string file = path::join(os::getcwd(), id::UUID::random().toString());
 
   const Bytes size = 1053;
 
@@ -222,21 +224,31 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Size)
 
   // The reported file size should be the same whether following links
   // or not, given that the input parameter is not a link.
-  EXPECT_SOME_EQ(size, os::stat::size(file, os::stat::FOLLOW_SYMLINK));
-  EXPECT_SOME_EQ(size, os::stat::size(file, os::stat::DO_NOT_FOLLOW_SYMLINK));
+  EXPECT_SOME_EQ(size,
+      os::stat::size(file, FollowSymlink::FOLLOW_SYMLINK));
+  EXPECT_SOME_EQ(size,
+      os::stat::size(file, FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
 
   EXPECT_ERROR(os::stat::size("aFileThatDoesNotExist"));
 
-  const string link = path::join(os::getcwd(), UUID::random().toString());
+  const string link = path::join(os::getcwd(), id::UUID::random().toString());
 
   ASSERT_SOME(fs::symlink(file, link));
 
   // Following links we expect the file's size, not the link's.
-  EXPECT_SOME_EQ(size, os::stat::size(link, os::stat::FOLLOW_SYMLINK));
+  EXPECT_SOME_EQ(size, os::stat::size(link, FollowSymlink::FOLLOW_SYMLINK));
 
+#ifdef __WINDOWS__
+  // On Windows, the reported size of a symlink is zero.
+  EXPECT_SOME_EQ(
+      Bytes(0),
+      os::stat::size(link, FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
+#else
   // Not following links, we expect the string length of the linked path.
-  EXPECT_SOME_EQ(Bytes(file.size()),
-                 os::stat::size(link, os::stat::DO_NOT_FOLLOW_SYMLINK));
+  EXPECT_SOME_EQ(
+      Bytes(file.size()),
+      os::stat::size(link, FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
+#endif // __WINDOWS__
 }
 
 
@@ -337,7 +349,7 @@ TEST_F(OsTest, Children)
   Try<set<pid_t>> children = os::children(getpid());
 
   ASSERT_SOME(children);
-  EXPECT_EQ(0u, children.get().size());
+  EXPECT_TRUE(children->empty());
 
   Try<ProcessTree> tree =
     Fork(None(),                   // Child.
@@ -712,15 +724,15 @@ TEST_F(OsTest, User)
   // A random UUID is an invalid username on some platforms. Some
   // versions of Linux (e.g., RHEL7) treat invalid usernames
   // differently from valid-but-not-found usernames.
-  EXPECT_NONE(os::getuid(UUID::random().toString()));
-  EXPECT_NONE(os::getgid(UUID::random().toString()));
+  EXPECT_NONE(os::getuid(id::UUID::random().toString()));
+  EXPECT_NONE(os::getgid(id::UUID::random().toString()));
 
   // A username that is valid but that is unlikely to exist.
   EXPECT_NONE(os::getuid("zzzvaliduserzzz"));
   EXPECT_NONE(os::getgid("zzzvaliduserzzz"));
 
   EXPECT_SOME(os::su(user.get()));
-  EXPECT_ERROR(os::su(UUID::random().toString()));
+  EXPECT_ERROR(os::su(id::UUID::random().toString()));
 
   Try<string> gids_ = os::shell("id -G " + user.get());
   EXPECT_SOME(gids_);
@@ -754,10 +766,8 @@ TEST_F(OsTest, User)
 }
 
 
-TEST_F(OsTest, Chown)
+TEST_F(OsTest, SYMLINK_Chown)
 {
-  using os::stat::DO_NOT_FOLLOW_SYMLINK;
-
   Result<uid_t> uid = os::getuid();
   ASSERT_SOME(uid);
 
@@ -783,33 +793,46 @@ TEST_F(OsTest, Chown)
   // symlink does not chown that subtree.
   EXPECT_SOME(fs::symlink("chown/one/two", "two.link"));
   EXPECT_SOME(os::chown(9, 9, "two.link", true));
-  EXPECT_SOME_EQ(9u, os::stat::uid("two.link", DO_NOT_FOLLOW_SYMLINK));
-  EXPECT_SOME_EQ(0u, os::stat::uid("chown", DO_NOT_FOLLOW_SYMLINK));
+  EXPECT_SOME_EQ(9u,
+      os::stat::uid("two.link", FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
   EXPECT_SOME_EQ(0u,
-      os::stat::uid("chown/one/two/three/file", DO_NOT_FOLLOW_SYMLINK));
+      os::stat::uid("chown", FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
+  EXPECT_SOME_EQ(0u,
+      os::stat::uid("chown/one/two/three/file",
+                    FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
 
   // Recursively chown the whole tree.
   EXPECT_SOME(os::chown(9, 9, "chown", true));
-  EXPECT_SOME_EQ(9u, os::stat::uid("chown", DO_NOT_FOLLOW_SYMLINK));
   EXPECT_SOME_EQ(9u,
-      os::stat::uid("chown/one/two/three/file", DO_NOT_FOLLOW_SYMLINK));
+      os::stat::uid("chown", FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
   EXPECT_SOME_EQ(9u,
-      os::stat::uid("chown/one/two/three/link", DO_NOT_FOLLOW_SYMLINK));
+      os::stat::uid("chown/one/two/three/file",
+                    FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
+  EXPECT_SOME_EQ(9u,
+      os::stat::uid("chown/one/two/three/link",
+                    FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
 
   // Chown the subtree with the embedded link back and verify that it
   // doesn't follow back to the top of the tree.
   EXPECT_SOME(os::chown(0, 0, "chown/one/two/three", true));
-  EXPECT_SOME_EQ(9u, os::stat::uid("chown", DO_NOT_FOLLOW_SYMLINK));
+  EXPECT_SOME_EQ(9u,
+      os::stat::uid("chown", FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
   EXPECT_SOME_EQ(0u,
-      os::stat::uid("chown/one/two/three", DO_NOT_FOLLOW_SYMLINK));
+      os::stat::uid("chown/one/two/three",
+                    FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
   EXPECT_SOME_EQ(0u,
-      os::stat::uid("chown/one/two/three/link", DO_NOT_FOLLOW_SYMLINK));
+      os::stat::uid("chown/one/two/three/link",
+                    FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
 
   // Verify that non-recursive chown changes the directory and not
   // its contents.
   EXPECT_SOME(os::chown(0, 0, "chown/one", false));
-  EXPECT_SOME_EQ(0u, os::stat::uid("chown/one", DO_NOT_FOLLOW_SYMLINK));
-  EXPECT_SOME_EQ(9u, os::stat::uid("chown/one/file", DO_NOT_FOLLOW_SYMLINK));
+  EXPECT_SOME_EQ(0u,
+      os::stat::uid("chown/one",
+                    FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
+  EXPECT_SOME_EQ(9u,
+      os::stat::uid("chown/one/file",
+                    FollowSymlink::DO_NOT_FOLLOW_SYMLINK));
 }
 
 
@@ -907,9 +930,9 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Libraries)
 }
 
 
-// TODO(hausdorff): Port this test to Windows; these shell commands as they
-// exist now don't make much sense to the Windows cmd prompt. See MESOS-3441.
-TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Shell)
+// NOTE: `os::shell()` is explicitly disallowed on Windows.
+#ifndef __WINDOWS__
+TEST_F(OsTest, Shell)
 {
   Try<string> result = os::shell("echo %s", "hello world");
   EXPECT_SOME_EQ("hello world\n", result);
@@ -934,6 +957,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Shell)
   EXPECT_SOME_EQ("", result);
   EXPECT_FALSE(os::exists("/tmp/os_tests.txt"));
 }
+#endif // __WINDOWS__
 
 
 // NOTE: Disabled on Windows because `mknod` does not exist.
@@ -976,10 +1000,7 @@ TEST_F(OsTest, Mknod)
 #endif // __WINDOWS__
 
 
-// TODO(hausdorff): Look into enabling this test on Windows. Currently it is
-// not possible to create a symlink on Windows unless the target exists. See
-// MESOS-5881.
-TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Realpath)
+TEST_F(OsTest, SYMLINK_Realpath)
 {
   // Create a file.
   const Try<string> _testFile = os::mktemp();
@@ -988,7 +1009,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Realpath)
   const string& testFile = _testFile.get();
 
   // Create a symlink pointing to a file.
-  const string testLink = UUID::random().toString();
+  const string testLink = id::UUID::random().toString();
   ASSERT_SOME(fs::symlink(testFile, testLink));
 
   // Validate the symlink.

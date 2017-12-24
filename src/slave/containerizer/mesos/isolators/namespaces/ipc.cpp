@@ -14,9 +14,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "linux/ns.hpp"
-
 #include "slave/containerizer/mesos/isolators/namespaces/ipc.hpp"
+
+#include <process/future.hpp>
+#include <process/id.hpp>
+
+#include "linux/ns.hpp"
 
 using process::Future;
 
@@ -57,6 +60,12 @@ NamespacesIPCIsolatorProcess::NamespacesIPCIsolatorProcess()
 
 
 bool NamespacesIPCIsolatorProcess::supportsNesting()
+{
+  return true;
+}
+
+
+bool NamespacesIPCIsolatorProcess::supportsStandalone()
 {
   return true;
 }

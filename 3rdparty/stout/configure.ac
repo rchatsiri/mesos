@@ -520,6 +520,7 @@ if test "x$without_bundled_protobuf" = "xyes" || \
       AC_MSG_ERROR([protoc not found in PATH])
     fi
 
+    PROTOCOMPILER="$PROTOBUFPREFIX/bin/protoc"
   else
     AC_MSG_ERROR([cannot find protobuf
 -------------------------------------------------------------------
@@ -539,6 +540,7 @@ fi
 AM_CONDITIONAL([WITH_BUNDLED_PROTOBUF],
                [test "x$with_bundled_protobuf" = "xyes"])
 
+AC_SUBST([PROTOCOMPILER])
 
 # Check if libsvn-1 prefix path was provided, and if so, add it to
 # the CPPFLAGS and LDFLAGS with respective /include and /lib path
@@ -690,9 +692,6 @@ case "$host_os" in
     if test "x$ax_cv_cxx_compiler_vendor" = "xclang"; then
       CXXFLAGS="$CXXFLAGS -stdlib=libc++"
     fi
-
-    # GTEST on OSX needs its own tr1 tuple.
-    CXXFLAGS="$CXXFLAGS -DGTEST_USE_OWN_TR1_TUPLE=1 -DGTEST_LANG_CXX11"
     ;;
   freebsd* )
     # If we're using clang, we need to pass -stdlib=libc++ too.

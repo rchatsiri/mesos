@@ -57,7 +57,9 @@ public:
                const hashmap<SlaveID, UnavailableResources>&)>&
         inverseOfferCallback,
       const Option<std::set<std::string>>&
-        fairnessExcludeResourceNames = None());
+        fairnessExcludeResourceNames = None(),
+      bool filterGpuResources = true,
+      const Option<DomainInfo>& domain = None());
 
   void recover(
       const int expectedAgentCount,
@@ -67,7 +69,8 @@ public:
       const FrameworkID& frameworkId,
       const FrameworkInfo& frameworkInfo,
       const hashmap<SlaveID, Resources>& used,
-      bool active);
+      bool active,
+      const std::set<std::string>& suppressedRoles);
 
   void removeFramework(
       const FrameworkID& frameworkId);
@@ -80,7 +83,8 @@ public:
 
   void updateFramework(
       const FrameworkID& frameworkId,
-      const FrameworkInfo& frameworkInfo);
+      const FrameworkInfo& frameworkInfo,
+      const std::set<std::string>& suppressedRoles);
 
   void addSlave(
       const SlaveID& slaveId,
@@ -95,8 +99,14 @@ public:
 
   void updateSlave(
       const SlaveID& slave,
-      const Option<Resources>& oversubscribed = None(),
+      const SlaveInfo& slaveInfo,
+      const Option<Resources>& total = None(),
       const Option<std::vector<SlaveInfo::Capability>>& capabilities = None());
+
+  void addResourceProvider(
+      const SlaveID& slave,
+      const Resources& total,
+      const hashmap<FrameworkID, Resources>& used);
 
   void activateSlave(
       const SlaveID& slaveId);
@@ -115,7 +125,7 @@ public:
       const FrameworkID& frameworkId,
       const SlaveID& slaveId,
       const Resources& offeredResources,
-      const std::vector<Offer::Operation>& operations);
+      const std::vector<ResourceConversion>& conversions);
 
   process::Future<Nothing> updateAvailable(
       const SlaveID& slaveId,
@@ -145,11 +155,11 @@ public:
 
   void suppressOffers(
       const FrameworkID& frameworkId,
-      const Option<std::string>& role);
+      const std::set<std::string>& roles);
 
   void reviveOffers(
       const FrameworkID& frameworkId,
-      const Option<std::string>& role);
+      const std::set<std::string>& roles);
 
   void setQuota(
       const std::string& role,
@@ -193,7 +203,9 @@ public:
                const hashmap<SlaveID, UnavailableResources>&)>&
         inverseOfferCallback,
       const Option<std::set<std::string>>&
-        fairnessExcludeResourceNames = None()) = 0;
+        fairnessExcludeResourceNames = None(),
+      bool filterGpuResources = true,
+      const Option<DomainInfo>& domain = None()) = 0;
 
   virtual void recover(
       const int expectedAgentCount,
@@ -203,7 +215,8 @@ public:
       const FrameworkID& frameworkId,
       const FrameworkInfo& frameworkInfo,
       const hashmap<SlaveID, Resources>& used,
-      bool active) = 0;
+      bool active,
+      const std::set<std::string>& suppressedRoles) = 0;
 
   virtual void removeFramework(
       const FrameworkID& frameworkId) = 0;
@@ -216,7 +229,8 @@ public:
 
   virtual void updateFramework(
       const FrameworkID& frameworkId,
-      const FrameworkInfo& frameworkInfo) = 0;
+      const FrameworkInfo& frameworkInfo,
+      const std::set<std::string>& suppressedRoles) = 0;
 
   virtual void addSlave(
       const SlaveID& slaveId,
@@ -231,9 +245,15 @@ public:
 
   virtual void updateSlave(
       const SlaveID& slave,
-      const Option<Resources>& oversubscribed = None(),
+      const SlaveInfo& slaveInfo,
+      const Option<Resources>& total = None(),
       const Option<std::vector<SlaveInfo::Capability>>&
           capabilities = None()) = 0;
+
+  virtual void addResourceProvider(
+      const SlaveID& slave,
+      const Resources& total,
+      const hashmap<FrameworkID, Resources>& used) = 0;
 
   virtual void activateSlave(
       const SlaveID& slaveId) = 0;
@@ -252,7 +272,7 @@ public:
       const FrameworkID& frameworkId,
       const SlaveID& slaveId,
       const Resources& offeredResources,
-      const std::vector<Offer::Operation>& operations) = 0;
+      const std::vector<ResourceConversion>& conversions) = 0;
 
   virtual process::Future<Nothing> updateAvailable(
       const SlaveID& slaveId,
@@ -282,11 +302,11 @@ public:
 
   virtual void suppressOffers(
       const FrameworkID& frameworkId,
-      const Option<std::string>& role) = 0;
+      const std::set<std::string>& roles) = 0;
 
   virtual void reviveOffers(
       const FrameworkID& frameworkId,
-      const Option<std::string>& role) = 0;
+      const std::set<std::string>& roles) = 0;
 
   virtual void setQuota(
       const std::string& role,
@@ -308,6 +328,7 @@ MesosAllocator<AllocatorProcess>::create()
     new MesosAllocator<AllocatorProcess>();
   return CHECK_NOTNULL(allocator);
 }
+
 
 template <typename AllocatorProcess>
 MesosAllocator<AllocatorProcess>::MesosAllocator()
@@ -337,7 +358,9 @@ inline void MesosAllocator<AllocatorProcess>::initialize(
         void(const FrameworkID&,
               const hashmap<SlaveID, UnavailableResources>&)>&
       inverseOfferCallback,
-    const Option<std::set<std::string>>& fairnessExcludeResourceNames)
+    const Option<std::set<std::string>>& fairnessExcludeResourceNames,
+    bool filterGpuResources,
+    const Option<DomainInfo>& domain)
 {
   process::dispatch(
       process,
@@ -345,7 +368,9 @@ inline void MesosAllocator<AllocatorProcess>::initialize(
       allocationInterval,
       offerCallback,
       inverseOfferCallback,
-      fairnessExcludeResourceNames);
+      fairnessExcludeResourceNames,
+      filterGpuResources,
+      domain);
 }
 
 
@@ -367,7 +392,8 @@ inline void MesosAllocator<AllocatorProcess>::addFramework(
     const FrameworkID& frameworkId,
     const FrameworkInfo& frameworkInfo,
     const hashmap<SlaveID, Resources>& used,
-    bool active)
+    bool active,
+    const std::set<std::string>& suppressedRoles)
 {
   process::dispatch(
       process,
@@ -375,7 +401,8 @@ inline void MesosAllocator<AllocatorProcess>::addFramework(
       frameworkId,
       frameworkInfo,
       used,
-      active);
+      active,
+      suppressedRoles);
 }
 
 
@@ -415,13 +442,15 @@ inline void MesosAllocator<AllocatorProcess>::deactivateFramework(
 template <typename AllocatorProcess>
 inline void MesosAllocator<AllocatorProcess>::updateFramework(
     const FrameworkID& frameworkId,
-    const FrameworkInfo& frameworkInfo)
+    const FrameworkInfo& frameworkInfo,
+    const std::set<std::string>& suppressedRoles)
 {
   process::dispatch(
       process,
       &MesosAllocatorProcess::updateFramework,
       frameworkId,
-      frameworkInfo);
+      frameworkInfo,
+      suppressedRoles);
 }
 
 
@@ -460,15 +489,31 @@ inline void MesosAllocator<AllocatorProcess>::removeSlave(
 template <typename AllocatorProcess>
 inline void MesosAllocator<AllocatorProcess>::updateSlave(
     const SlaveID& slaveId,
-    const Option<Resources>& oversubscribed,
+    const SlaveInfo& slaveInfo,
+    const Option<Resources>& total,
     const Option<std::vector<SlaveInfo::Capability>>& capabilities)
 {
   process::dispatch(
       process,
       &MesosAllocatorProcess::updateSlave,
       slaveId,
-      oversubscribed,
+      slaveInfo,
+      total,
       capabilities);
+}
+
+template <typename AllocatorProcess>
+void MesosAllocator<AllocatorProcess>::addResourceProvider(
+    const SlaveID& slave,
+    const Resources& total,
+    const hashmap<FrameworkID, Resources>& used)
+{
+  process::dispatch(
+      process,
+      &MesosAllocatorProcess::addResourceProvider,
+      slave,
+      total,
+      used);
 }
 
 
@@ -523,7 +568,7 @@ inline void MesosAllocator<AllocatorProcess>::updateAllocation(
     const FrameworkID& frameworkId,
     const SlaveID& slaveId,
     const Resources& offeredResources,
-    const std::vector<Offer::Operation>& operations)
+    const std::vector<ResourceConversion>& conversions)
 {
   process::dispatch(
       process,
@@ -531,7 +576,7 @@ inline void MesosAllocator<AllocatorProcess>::updateAllocation(
       frameworkId,
       slaveId,
       offeredResources,
-      operations);
+      conversions);
 }
 
 
@@ -613,26 +658,26 @@ inline void MesosAllocator<AllocatorProcess>::recoverResources(
 template <typename AllocatorProcess>
 inline void MesosAllocator<AllocatorProcess>::suppressOffers(
     const FrameworkID& frameworkId,
-    const Option<std::string>& role)
+    const std::set<std::string>& roles)
 {
   process::dispatch(
       process,
       &MesosAllocatorProcess::suppressOffers,
       frameworkId,
-      role);
+      roles);
 }
 
 
 template <typename AllocatorProcess>
 inline void MesosAllocator<AllocatorProcess>::reviveOffers(
     const FrameworkID& frameworkId,
-    const Option<std::string>& role)
+    const std::set<std::string>& roles)
 {
   process::dispatch(
       process,
       &MesosAllocatorProcess::reviveOffers,
       frameworkId,
-      role);
+      roles);
 }
 
 

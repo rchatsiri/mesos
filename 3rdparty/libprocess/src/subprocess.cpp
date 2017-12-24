@@ -23,6 +23,7 @@
 #endif // __linux__
 #include <sys/types.h>
 
+#include <initializer_list>
 #include <string>
 
 #include <glog/logging.h>
@@ -39,6 +40,12 @@
 #include <stout/strings.hpp>
 #include <stout/try.hpp>
 
+#ifdef __WINDOWS__
+#include "subprocess_windows.hpp"
+#else
+#include "subprocess_posix.hpp"
+#endif // __WINDOWS__
+
 using std::map;
 using std::string;
 using std::vector;
@@ -52,25 +59,6 @@ using OutputFileDescriptors = Subprocess::IO::OutputFileDescriptors;
 Subprocess::ParentHook::ParentHook(
     const lambda::function<Try<Nothing>(pid_t)>& _parent_setup)
   : parent_setup(_parent_setup) {}
-
-
-#ifdef __WINDOWS__
-Subprocess::ParentHook Subprocess::ParentHook::CREATE_JOB()
-{
-  return Subprocess::ParentHook([](pid_t pid) -> Try<Nothing> {
-    // NOTE: The Job Object's handle is not closed here. Although it
-    // looks like we are leaking the handle, we can still retrieve and
-    // close the handle via the `OpenJobObject` Windows API.
-    Try<HANDLE> job = os::create_job(pid);
-
-    if (job.isError()) {
-      return Error(job.error());
-    }
-
-    return Nothing();
-  });
-}
-#endif // __WINDOWS__
 
 
 Subprocess::ChildHook::ChildHook(
@@ -129,12 +117,12 @@ Subprocess::ChildHook Subprocess::ChildHook::UNSET_CLOEXEC(int fd)
 
 
 #ifdef __linux__
-inline void signalHandler(int signal)
+static void signalHandler(int signal)
 {
   // Send SIGKILL to every process in the process group of the
   // calling process.
   kill(0, SIGKILL);
-  abort();
+  _exit(EXIT_FAILURE);
 }
 #endif // __linux__
 
@@ -188,8 +176,10 @@ Subprocess::ChildHook Subprocess::ChildHook::SUPERVISOR()
 
       // Block until the child process finishes.
       int status = 0;
-      if (waitpid(pid, &status, 0) == -1) {
-        abort();
+      while (waitpid(pid, &status, 0) == -1) {
+        if (errno != EINTR) {
+          _exit(EXIT_FAILURE);
+        }
       }
 
       // Forward the exit status if the child process exits normally.
@@ -197,8 +187,7 @@ Subprocess::ChildHook Subprocess::ChildHook::SUPERVISOR()
         _exit(WEXITSTATUS(status));
       }
 
-      abort();
-      UNREACHABLE();
+      _exit(EXIT_FAILURE);
     }
 #endif // __linux__
     return Nothing();
@@ -283,6 +272,33 @@ static void cleanup(
   delete promise;
 }
 
+
+static void close(std::initializer_list<int_fd> fds)
+{
+  foreach (int_fd fd, fds) {
+    if (fd >= 0) {
+      os::close(fd);
+    }
+  }
+}
+
+
+// This function will invoke `os::close` on all specified file
+// descriptors that are valid (i.e., not `None` and >= 0).
+static void close(
+    const Subprocess::IO::InputFileDescriptors& stdinfds,
+    const Subprocess::IO::OutputFileDescriptors& stdoutfds,
+    const Subprocess::IO::OutputFileDescriptors& stderrfds)
+{
+  close(
+      {stdinfds.read,
+       stdinfds.write.getOrElse(-1),
+       stdoutfds.read.getOrElse(-1),
+       stdoutfds.write,
+       stderrfds.read.getOrElse(-1),
+       stderrfds.write});
+}
+
 }  // namespace internal {
 
 
@@ -291,7 +307,7 @@ static void cleanup(
 // NOTE: On Windows, components of the `path` and `argv` that need to be quoted
 // are expected to have been quoted before they are passed to `subprocess. For
 // example, either of these may contain paths with spaces in them, like
-// `C:\"Program Files"\foo.exe`, where notably the character sequence `\"` does
+// `C:\"Program Files"\foo.exe`, where notably the character sequence `\"`
 // is not escaped quote, but instead a path separator and the start of a path
 // component. Since the semantics of quoting are shell-dependent, it is not
 // practical to attempt to re-parse the command that is passed in and properly
@@ -399,22 +415,23 @@ Try<Subprocess> subprocess(
     process.data->pid = pid.get();
 #else
     // TODO(joerg84): Consider using the childHooks and parentHooks here.
-    Try<PROCESS_INFORMATION> processInformation = internal::createChildProcess(
-        path,
-        argv,
-        environment,
-        stdinfds,
-        stdoutfds,
-        stderrfds,
-        parent_hooks);
+    Try<::internal::windows::ProcessData> process_data =
+      internal::createChildProcess(
+          path,
+          argv,
+          environment,
+          parent_hooks,
+          stdinfds,
+          stdoutfds,
+          stderrfds);
 
-    if (processInformation.isError()) {
+    if (process_data.isError()) {
       process::internal::close(stdinfds, stdoutfds, stderrfds);
       return Error(
-          "Could not launch child process: " + processInformation.error());
+          "Could not launch child process: " + process_data.error());
     }
 
-    if (processInformation.get().dwProcessId == -1) {
+    if (process_data.get().pid == -1) {
       // Save the errno as 'close' below might overwrite it.
       ErrnoError error("Failed to clone");
       process::internal::close(stdinfds, stdoutfds, stderrfds);
@@ -427,8 +444,8 @@ Try<Subprocess> subprocess(
     // 'createChildProcess' to be consistent with the posix path.
     internal::close({stdinfds.read, stdoutfds.write, stderrfds.write});
 
-    process.data->processInformation = processInformation.get();
-    process.data->pid = processInformation.get().dwProcessId;
+    process.data->process_data = process_data.get();
+    process.data->pid = process_data.get().pid;
 #endif // __WINDOWS__
   }
 

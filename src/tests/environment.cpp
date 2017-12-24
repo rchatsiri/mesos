@@ -57,7 +57,7 @@
 #include "linux/perf.hpp"
 #endif
 
-#ifdef WITH_NETWORK_ISOLATOR
+#ifdef ENABLE_PORT_MAPPING_ISOLATOR
 #include "linux/routing/utils.hpp"
 #endif
 
@@ -67,7 +67,7 @@
 #include "tests/flags.hpp"
 #include "tests/utils.hpp"
 
-#ifdef WITH_NETWORK_ISOLATOR
+#ifdef ENABLE_PORT_MAPPING_ISOLATOR
 using namespace routing;
 #endif
 
@@ -78,38 +78,15 @@ using std::vector;
 
 using process::Owned;
 
+using stout::internal::tests::TestFilter;
+
+
 namespace mesos {
 namespace internal {
 namespace tests {
 
 // Storage for the global environment instance.
 Environment* environment;
-
-
-class TestFilter
-{
-public:
-  TestFilter() {}
-  virtual ~TestFilter() {}
-
-  // Returns true iff the test should be disabled.
-  virtual bool disable(const ::testing::TestInfo* test) const = 0;
-
-  // Returns whether the test name / parameterization matches the
-  // pattern.
-  static bool matches(const ::testing::TestInfo* test, const string& pattern)
-  {
-    if (strings::contains(test->test_case_name(), pattern) ||
-        strings::contains(test->name(), pattern)) {
-      return true;
-    } else if (test->type_param() != nullptr &&
-               strings::contains(test->type_param(), pattern)) {
-      return true;
-    }
-
-    return false;
-  }
-};
 
 
 class BenchmarkFilter : public TestFilter
@@ -288,17 +265,22 @@ class DockerFilter : public TestFilter
 public:
   DockerFilter()
   {
-#ifdef __linux__
+#if defined(__linux__) || defined(__WINDOWS__)
     Try<Owned<Docker>> docker = Docker::create(
         flags.docker,
         flags.docker_socket);
 
-    if (docker.isError()) {
+    if (!docker.isError()) {
+      Try<Nothing> version = docker.get()->validateVersion(Version(1, 9, 0));
+      if (version.isError()) {
+        dockerUserNetworkError = version.error();
+      }
+    } else {
       dockerError = docker.error();
     }
 #else
-    dockerError = Error("Docker tests not supported on non-Linux systems");
-#endif // __linux__
+    dockerError = Error("Docker tests are not supported on this platform");
+#endif // __linux__ || __WINDOWS__
 
     if (dockerError.isSome()) {
       std::cerr
@@ -308,15 +290,103 @@ public:
         << "-------------------------------------------------------------"
         << std::endl;
     }
+
+    if (dockerUserNetworkError.isSome()) {
+      std::cerr
+        << "-------------------------------------------------------------\n"
+        << "We cannot run any Docker user network tests because:\n"
+        << dockerUserNetworkError->message << "\n"
+        << "-------------------------------------------------------------"
+        << std::endl;
+    }
   }
 
   bool disable(const ::testing::TestInfo* test) const
   {
-    return matches(test, "DOCKER_") && dockerError.isSome();
+    if (dockerError.isSome()) {
+      return matches(test, "DOCKER_");
+    }
+
+    return matches(test, "DOCKER_USERNETWORK_") &&
+      dockerUserNetworkError.isSome();
   }
 
 private:
   Option<Error> dockerError;
+  Option<Error> dockerUserNetworkError;
+};
+
+
+// Note: This is a temporary filter to disable tests that use
+// overlay as backend on filesystems where `d_type` support is
+// missing. In particular, many XFS nodes are known to have this
+// issue due to mkfs option with `f_type = 0`. Please see
+// MESOS-8121 for more info.
+//
+// This filter assumes that the affected tests will use
+// `/tmp` as root directory of the agent's work dir.
+class DtypeFilter : public TestFilter
+{
+public:
+  DtypeFilter()
+  {
+#ifdef __linux__
+    auto checkDirDtype = [this](const string& directory) {
+      string probeDir = path::join(directory, ".probe");
+
+      Try<Nothing> mkdir = os::mkdir(probeDir);
+      if (mkdir.isError()) {
+        dtypeError = Error(
+            "Cannot verify filesystem d_type attribute: "
+            "Failed to create temporary directory '" +
+            probeDir + "': " + mkdir.error());
+      }
+
+      Try<bool> supportDType = fs::dtypeSupported(directory);
+
+      // Clean up the temporary directory that is used
+      // for d_type detection.
+      Try<Nothing> rmdir = os::rmdir(probeDir);
+      if (rmdir.isError()) {
+        LOG(WARNING) << "Failed to remove temporary directory"
+                     << "' " << probeDir << "': " << rmdir.error();
+      }
+
+      if (supportDType.isError()) {
+        dtypeError = Error(
+          "Cannot verify filesystem d_type attribute: " +
+          supportDType.error());
+      }
+
+      if (!supportDType.get()) {
+        dtypeError = Error(
+            "The underlying filesystem of " + directory +
+            " misses d_type support.");
+      }
+    };
+
+    // TODO(mzhu): Avoid hard coding a specific directory for
+    // filtering. This is a temporary solution.
+    checkDirDtype(os::temp());
+
+    if (dtypeError.isSome()) {
+      std::cerr
+        << "-------------------------------------------------------------\n"
+        << "We cannot run any overlay backend tests because:\n"
+        << dtypeError.get().message << "\n"
+        << "-------------------------------------------------------------\n";
+      return;
+    }
+#endif
+  }
+
+  bool disable(const ::testing::TestInfo* test) const
+  {
+    return dtypeError.isSome() && matches(test, "DTYPE_");
+  }
+
+private:
+  Option<Error> dtypeError;
 };
 
 
@@ -457,7 +527,7 @@ class NetworkIsolatorTestFilter : public TestFilter
 public:
   NetworkIsolatorTestFilter()
   {
-#ifdef WITH_NETWORK_ISOLATOR
+#ifdef ENABLE_PORT_MAPPING_ISOLATOR
     Try<Nothing> check = routing::check();
     if (check.isError()) {
       std::cerr
@@ -475,7 +545,7 @@ public:
   {
     if (matches(test, "PortMappingIsolatorTest") ||
         matches(test, "PortMappingMesosTest")) {
-#ifdef WITH_NETWORK_ISOLATOR
+#ifdef ENABLE_PORT_MAPPING_ISOLATOR
       return !portMappingError.isNone();
 #else
       return true;
@@ -641,8 +711,8 @@ public:
   bool disable(const ::testing::TestInfo* test) const
   {
 #ifdef __WINDOWS__
-    // On Windows, `root` does not exist, so we cannot run `ROOT_` tests.
-    return matches(test, "ROOT_");
+    // On Windows, tests are expected to be run as Administrator.
+    return false;
 #else
     Result<string> user = os::user();
     CHECK_SOME(user);
@@ -686,99 +756,30 @@ private:
 };
 
 
-// Return list of disabled tests based on test name based filters.
-static vector<string> disabled(
-    const ::testing::UnitTest* unitTest,
-    const vector<Owned<TestFilter>>& filters)
+Environment::Environment(const Flags& _flags)
+  : stout::internal::tests::Environment(
+        std::vector<std::shared_ptr<TestFilter>>{
+            std::make_shared<AufsFilter>(),
+            std::make_shared<BenchmarkFilter>(),
+            std::make_shared<CfsFilter>(),
+            std::make_shared<CgroupsFilter>(),
+            std::make_shared<CurlFilter>(),
+            std::make_shared<DockerFilter>(),
+            std::make_shared<DtypeFilter>(),
+            std::make_shared<InternetFilter>(),
+            std::make_shared<LogrotateFilter>(),
+            std::make_shared<NetcatFilter>(),
+            std::make_shared<NetClsCgroupsFilter>(),
+            std::make_shared<NetworkIsolatorTestFilter>(),
+            std::make_shared<NvidiaGpuFilter>(),
+            std::make_shared<OverlayFSFilter>(),
+            std::make_shared<PerfCPUCyclesFilter>(),
+            std::make_shared<PerfFilter>(),
+            std::make_shared<RootFilter>(),
+            std::make_shared<UnzipFilter>(),
+            std::make_shared<XfsFilter>()}),
+    flags(_flags)
 {
-  vector<string> disabled;
-
-  for (int i = 0; i < unitTest->total_test_case_count(); i++) {
-    const ::testing::TestCase* testCase = unitTest->GetTestCase(i);
-    for (int j = 0; j < testCase->total_test_count(); j++) {
-      const ::testing::TestInfo* test = testCase->GetTestInfo(j);
-
-      foreach (const Owned<TestFilter>& filter, filters) {
-        if (filter->disable(test)) {
-          disabled.push_back(
-              test->test_case_name() + string(".") + test->name());
-          break;
-        }
-      }
-    }
-  }
-
-  return disabled;
-}
-
-
-// We use the constructor to setup specific tests by updating the
-// gtest filter. We do this so that we can selectively run tests that
-// require root or specific OS support (e.g., cgroups). Note that this
-// should not effect any other filters that have been put in place
-// either on the command line or via an environment variable.
-// N.B. This MUST be done _before_ invoking RUN_ALL_TESTS.
-Environment::Environment(const Flags& _flags) : flags(_flags)
-{
-  // First we split the current filter into enabled and disabled tests
-  // (which are separated by a '-').
-  const string& filter = ::testing::GTEST_FLAG(filter);
-
-  // An empty filter indicates no tests should be run.
-  if (filter.empty()) {
-    return;
-  }
-
-  string enabled;
-  string disabled;
-
-  size_t dash = filter.find('-');
-  if (dash != string::npos) {
-    enabled = filter.substr(0, dash);
-    disabled = filter.substr(dash + 1);
-  } else {
-    enabled = filter;
-  }
-
-  // Use universal filter if not specified.
-  if (enabled.empty()) {
-    enabled = "*";
-  }
-
-  // Ensure disabled tests end with ":" separator before we add more.
-  if (!disabled.empty() && !strings::endsWith(disabled, ":")) {
-    disabled += ":";
-  }
-
-  vector<Owned<TestFilter>> filters;
-
-  filters.push_back(Owned<TestFilter>(new AufsFilter()));
-  filters.push_back(Owned<TestFilter>(new BenchmarkFilter()));
-  filters.push_back(Owned<TestFilter>(new CfsFilter()));
-  filters.push_back(Owned<TestFilter>(new CgroupsFilter()));
-  filters.push_back(Owned<TestFilter>(new CurlFilter()));
-  filters.push_back(Owned<TestFilter>(new DockerFilter()));
-  filters.push_back(Owned<TestFilter>(new InternetFilter()));
-  filters.push_back(Owned<TestFilter>(new LogrotateFilter()));
-  filters.push_back(Owned<TestFilter>(new NetcatFilter()));
-  filters.push_back(Owned<TestFilter>(new NetClsCgroupsFilter()));
-  filters.push_back(Owned<TestFilter>(new NetworkIsolatorTestFilter()));
-  filters.push_back(Owned<TestFilter>(new NvidiaGpuFilter()));
-  filters.push_back(Owned<TestFilter>(new OverlayFSFilter()));
-  filters.push_back(Owned<TestFilter>(new PerfCPUCyclesFilter()));
-  filters.push_back(Owned<TestFilter>(new PerfFilter()));
-  filters.push_back(Owned<TestFilter>(new RootFilter()));
-  filters.push_back(Owned<TestFilter>(new UnzipFilter()));
-  filters.push_back(Owned<TestFilter>(new XfsFilter()));
-
-  // Construct the filter string to handle system or platform specific tests.
-  ::testing::UnitTest* unitTest = ::testing::UnitTest::GetInstance();
-
-  disabled += strings::join(":", tests::disabled(unitTest, filters));
-
-  // Now update the gtest flag.
-  ::testing::GTEST_FLAG(filter) = enabled + "-" + disabled;
-
   // Add our test event listeners.
   ::testing::TestEventListeners& listeners =
     ::testing::UnitTest::GetInstance()->listeners();
@@ -810,16 +811,9 @@ void Environment::SetUp()
     os::setenv("MESOS_NATIVE_JAVA_LIBRARY", path);
   }
 
-  // TODO(hausdorff): Revisit whether we need this check when we complete work
-  // to light up Agent tests on Windows (see epic tracking this work at
-  // MESOS-6695). As we incrementally add tests to the Windows build, we will
-  // add this check to the tests that need it; eventually, the goal is to get
-  // rid of this altogether. See MESOS-5903.
-#ifndef __WINDOWS__
-  if (!GTEST_IS_THREADSAFE) {
-    EXIT(EXIT_FAILURE) << "Testing environment is not thread safe, bailing!";
-  }
-#endif // __WINDOWS__
+#if !GTEST_IS_THREADSAFE
+  EXIT(EXIT_FAILURE) << "Testing environment is not thread safe, bailing!";
+#endif // !GTEST_IS_THREADSAFE
 }
 
 

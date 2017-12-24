@@ -53,6 +53,7 @@
 #include <stout/unreachable.hpp>
 
 #include <stout/os/constants.hpp>
+#include <stout/os/realpath.hpp>
 
 #include "common/http.hpp"
 
@@ -103,11 +104,11 @@ public:
   // Files implementation.
   Future<Nothing> attach(
       const string& path,
-      const string& name,
+      const string& virtualPath,
       const Option<lambda::function<Future<bool>(
           const Option<Principal>&)>>& authorized);
 
-  void detach(const string& name);
+  void detach(const string& virtualPath);
 
   Future<Try<list<FileInfo>, FilesError>> browse(
       const string& path,
@@ -205,76 +206,108 @@ FilesProcess::FilesProcess(
 void FilesProcess::initialize()
 {
   if (authenticationRealm.isSome()) {
+    auto browse_ = [this](
+        const http::Request& request,
+        const Option<Principal>& principal) {
+      logRequest(request);
+      return _browse(request, principal);
+    };
+
+    auto read_ = [this](
+        const http::Request& request,
+        const Option<Principal>& principal) {
+      logRequest(request);
+      return __read(request, principal);
+    };
+
+    auto download_ = [this](
+        const http::Request& request,
+        const Option<Principal>& principal) {
+      logRequest(request);
+      return download(request, principal);
+    };
+
+    auto debug_ = [this](
+        const http::Request& request,
+        const Option<Principal>& principal) {
+      logRequest(request);
+      return debug(request, principal);
+    };
+
     // TODO(ijimenez): Remove these endpoints at the end of the
     // deprecation cycle on 0.26.
     route("/browse.json",
           authenticationRealm.get(),
           FilesProcess::BROWSE_HELP,
-          &FilesProcess::_browse);
+          browse_);
     route("/read.json",
           authenticationRealm.get(),
           FilesProcess::READ_HELP,
-          &FilesProcess::__read);
+          read_);
     route("/download.json",
           authenticationRealm.get(),
           FilesProcess::DOWNLOAD_HELP,
-          &FilesProcess::download);
+          download_);
     route("/debug.json",
           authenticationRealm.get(),
           FilesProcess::DEBUG_HELP,
-          &FilesProcess::debug);
+          debug_);
 
     route("/browse",
           authenticationRealm.get(),
           FilesProcess::BROWSE_HELP,
-          &FilesProcess::_browse);
+          browse_);
     route("/read",
           authenticationRealm.get(),
           FilesProcess::READ_HELP,
-          &FilesProcess::__read);
+          read_);
     route("/download",
           authenticationRealm.get(),
           FilesProcess::DOWNLOAD_HELP,
-          &FilesProcess::download);
+          download_);
     route("/debug",
           authenticationRealm.get(),
           FilesProcess::DEBUG_HELP,
-          &FilesProcess::debug);
+          debug_);
   } else {
+    auto browse_ = [this](const http::Request& request) {
+      logRequest(request);
+      return _browse(request, None());
+    };
+
+    auto read_ = [this](const http::Request& request) {
+      logRequest(request);
+      return __read(request, None());
+    };
+
+    auto download_ = [this](const http::Request& request) {
+      logRequest(request);
+      return download(request, None());
+    };
+
+    auto debug_ = [this](const http::Request& request) {
+      logRequest(request);
+      return debug(request, None());
+    };
+
     // TODO(ijimenez): Remove these endpoints at the end of the
     // deprecation cycle on 0.26.
-    route("/browse.json",
-          FilesProcess::BROWSE_HELP,
-          lambda::bind(&FilesProcess::_browse, this, lambda::_1, None()));
-    route("/read.json",
-          FilesProcess::READ_HELP,
-          lambda::bind(&FilesProcess::__read, this, lambda::_1, None()));
-    route("/download.json",
-          FilesProcess::DOWNLOAD_HELP,
-          lambda::bind(&FilesProcess::download, this, lambda::_1, None()));
-    route("/debug.json",
-          FilesProcess::DEBUG_HELP,
-          lambda::bind(&FilesProcess::debug, this, lambda::_1, None()));
+    route("/browse.json", FilesProcess::BROWSE_HELP, browse_);
+    route("/read.json", FilesProcess::READ_HELP, read_);
+    route("/download.json", FilesProcess::DOWNLOAD_HELP, download_);
+    route("/debug.json", FilesProcess::DEBUG_HELP, debug_);
 
-    route("/browse",
-          FilesProcess::BROWSE_HELP,
-          lambda::bind(&FilesProcess::_browse, this, lambda::_1, None()));
-    route("/read",
-          FilesProcess::READ_HELP,
-          lambda::bind(&FilesProcess::__read, this, lambda::_1, None()));
-    route("/download",
-          FilesProcess::DOWNLOAD_HELP,
-          lambda::bind(&FilesProcess::download, this, lambda::_1, None()));
-    route("/debug",
-          FilesProcess::DEBUG_HELP,
-          lambda::bind(&FilesProcess::debug, this, lambda::_1, None()));
+    route("/browse", FilesProcess::BROWSE_HELP, browse_);
+    route("/read", FilesProcess::READ_HELP, read_);
+    route("/download", FilesProcess::DOWNLOAD_HELP, download_);
+    route("/debug", FilesProcess::DEBUG_HELP, debug_);
   }
 }
 
 
 Future<Nothing> FilesProcess::attach(
     const string& path,
-    const string& name,
+    const string& virtualPath,
     const Option<lambda::function<Future<bool>(const Option<Principal>&)>>&
         authorized)
 {
@@ -296,24 +329,26 @@ Future<Nothing> FilesProcess::attach(
                    (access.isError() ? access.error() : "Access denied"));
   }
 
-  // To simplify the read/browse logic, strip any trailing / from the name.
-  string cleanedName = strings::remove(name, "/", strings::SUFFIX);
+  // To simplify the read/browse logic, strip any trailing / from the virtual
+  // path.
+  string cleanedVirtualPath =
+    strings::remove(virtualPath, "/", strings::SUFFIX);
 
   // TODO(bmahler): Do we want to always wipe out the previous path?
-  paths[cleanedName] = result.get();
+  paths[cleanedVirtualPath] = result.get();
 
   if (authorized.isSome()) {
-    authorizations[cleanedName] = authorized.get();
+    authorizations[cleanedVirtualPath] = authorized.get();
   }
 
   return Nothing();
 }
 
 
-void FilesProcess::detach(const string& name)
+void FilesProcess::detach(const string& virtualPath)
 {
-  paths.erase(name);
-  authorizations.erase(name);
+  paths.erase(virtualPath);
+  authorizations.erase(virtualPath);
 }
 
 
@@ -797,8 +832,8 @@ Future<http::Response> FilesProcess::debug(
     const Option<Principal>& principal)
 {
   JSON::Object object;
-  foreachpair (const string& name, const string& path, paths) {
-    object.values[name] = path;
+  foreachpair (const string& virtualPath, const string& path, paths) {
+    object.values[virtualPath] = path;
   }
 
   const Option<string>& jsonp = request.url.query.get("jsonp");
@@ -905,17 +940,22 @@ Files::~Files()
 
 Future<Nothing> Files::attach(
     const string& path,
-    const string& name,
+    const string& virtualPath,
     const Option<lambda::function<Future<bool>(const Option<Principal>&)>>&
         authorized)
 {
-  return dispatch(process, &FilesProcess::attach, path, name, authorized);
+  return dispatch(
+      process,
+      &FilesProcess::attach,
+      path,
+      virtualPath,
+      authorized);
 }
 
 
-void Files::detach(const string& name)
+void Files::detach(const string& virtualPath)
 {
-  dispatch(process, &FilesProcess::detach, name);
+  dispatch(process, &FilesProcess::detach, virtualPath);
 }
 
 

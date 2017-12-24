@@ -341,7 +341,6 @@ protected:
       // is safe even if no timer is active or pending.
       Clock::cancel(frameworkRegistrationTimer);
 
-#ifdef HAS_AUTHENTICATION
       if (credential.isSome()) {
         // Authenticate with the master.
         // TODO(adam-mesos): Consider adding an initial delay like we do for
@@ -358,15 +357,6 @@ protected:
         // (e.g., rate limiting tests).
         doReliableRegistration(flags.registration_backoff_factor);
       }
-#else
-      // Authentication not enabled on this platform. Proceed with registration
-      // without authentication.
-      reauthenticate = false;
-      LOG(INFO) << "Authentication is not available on this platform. "
-                   "Attempting to register without authentication";
-
-      doReliableRegistration(flags.registration_backoff_factor);
-#endif // HAS_AUTHENTICATION
     } else {
       // In this case, we don't actually invoke Scheduler::error
       // since we might get reconnected to a master imminently.
@@ -378,7 +368,6 @@ protected:
       .onAny(defer(self(), &SchedulerProcess::detected, lambda::_1));
   }
 
-#ifdef HAS_AUTHENTICATION
   void authenticate()
   {
     if (!running.load()) {
@@ -537,7 +526,6 @@ protected:
       LOG(WARNING) << "Authentication timed out";
     }
   }
-#endif // HAS_AUTHENTICATION
 
   void drop(const Event& event, const string& message)
   {
@@ -666,6 +654,10 @@ protected:
         statusUpdate(from, update, UPID());
         break;
       }
+
+      // TODO(greggomann): Implement handling of operation status updates.
+      case Event::UPDATE_OPERATION_STATUS:
+        break;
 
       case Event::MESSAGE: {
         if (!event.has_message()) {
@@ -825,13 +817,9 @@ protected:
       return;
     }
 
-#ifdef HAS_AUTHENTICATION
     if (credential.isSome() && !authenticated) {
       return;
     }
-#else
-    authenticated = false;
-#endif // HAS_AUTHENTICATION
 
     VLOG(1) << "Sending SUBSCRIBE call to " << master.get().pid();
 
@@ -856,7 +844,7 @@ protected:
     // by 1/10th of the failover timeout.
     if (framework.has_failover_timeout()) {
       Try<Duration> duration = Duration::create(framework.failover_timeout());
-      if (duration.isSome()) {
+      if (duration.isSome() && duration.get() > Duration::zero()) {
         maxBackoff = std::min(maxBackoff, duration.get() / 10);
       }
     }
@@ -1735,7 +1723,7 @@ void MesosSchedulerDriver::initialize() {
   // Initialize logging.
   // TODO(benh): Replace whitespace in framework.name() with '_'?
   if (flags.initialize_driver_logging) {
-    logging::initialize(framework.name(), flags);
+    logging::initialize(framework.name(), false, flags);
   } else {
     VLOG(1) << "Disabling initialization of GLOG logging";
   }
@@ -1808,7 +1796,7 @@ MesosSchedulerDriver::MesosSchedulerDriver(
     status(DRIVER_NOT_STARTED),
     implicitAcknowlegements(true),
     credential(nullptr),
-    schedulerId("scheduler-" + UUID::random().toString())
+    schedulerId("scheduler-" + id::UUID::random().toString())
 {
   initialize();
 }
@@ -1828,7 +1816,7 @@ MesosSchedulerDriver::MesosSchedulerDriver(
     status(DRIVER_NOT_STARTED),
     implicitAcknowlegements(true),
     credential(new Credential(_credential)),
-    schedulerId("scheduler-" + UUID::random().toString())
+    schedulerId("scheduler-" + id::UUID::random().toString())
 {
   initialize();
 }
@@ -1848,7 +1836,7 @@ MesosSchedulerDriver::MesosSchedulerDriver(
     status(DRIVER_NOT_STARTED),
     implicitAcknowlegements(_implicitAcknowlegements),
     credential(nullptr),
-    schedulerId("scheduler-" + UUID::random().toString())
+    schedulerId("scheduler-" + id::UUID::random().toString())
 {
   initialize();
 }
@@ -1869,7 +1857,7 @@ MesosSchedulerDriver::MesosSchedulerDriver(
     status(DRIVER_NOT_STARTED),
     implicitAcknowlegements(_implicitAcknowlegements),
     credential(new Credential(_credential)),
-    schedulerId("scheduler-" + UUID::random().toString())
+    schedulerId("scheduler-" + id::UUID::random().toString())
 {
   initialize();
 }

@@ -79,7 +79,6 @@
 #include "master/flags.hpp"
 #include "master/machine.hpp"
 #include "master/metrics.hpp"
-#include "master/registrar.hpp"
 #include "master/validation.hpp"
 
 #include "messages/messages.hpp"
@@ -92,6 +91,7 @@ namespace mesos {
 
 // Forward declarations.
 class Authorizer;
+class ObjectApprover;
 
 namespace internal {
 
@@ -100,11 +100,13 @@ namespace registry {
 class Slaves;
 }
 
+class Registry;
 class WhitelistWatcher;
 
 namespace master {
 
 class Master;
+class Registrar;
 class SlaveObserver;
 
 struct BoundedRateLimiter;
@@ -114,18 +116,17 @@ struct Role;
 
 struct Slave
 {
-  Slave(Master* const _master,
-        const SlaveInfo& _info,
+Slave(Master* const _master,
+      SlaveInfo _info,
         const process::UPID& _pid,
         const MachineID& _machineId,
         const std::string& _version,
-        const std::vector<SlaveInfo::Capability>& _capabilites,
+        std::vector<SlaveInfo::Capability> _capabilites,
         const process::Time& _registeredTime,
-        const Resources& _checkpointedResources,
-        const std::vector<ExecutorInfo> executorInfos =
-          std::vector<ExecutorInfo>(),
-        const std::vector<Task> tasks =
-          std::vector<Task>());
+        std::vector<Resource> _checkpointedResources,
+        const Option<id::UUID>& resourceVersion,
+        std::vector<ExecutorInfo> executorInfos = std::vector<ExecutorInfo>(),
+        std::vector<Task> tasks = std::vector<Task>());
 
   ~Slave();
 
@@ -144,6 +145,14 @@ struct Slave
   void recoverResources(Task* task);
 
   void removeTask(Task* task);
+
+  void addOperation(Operation* operation);
+
+  void recoverResources(Operation* operation);
+
+  void removeOperation(Operation* operation);
+
+  Operation* getOperation(const id::UUID& uuid) const;
 
   void addOffer(Offer* offer);
 
@@ -165,11 +174,17 @@ struct Slave
       const FrameworkID& frameworkId,
       const ExecutorID& executorId);
 
-  void apply(const Offer::Operation& operation);
+  void apply(const std::vector<ResourceConversion>& conversions);
+
+  Try<Nothing> update(
+      const SlaveInfo& info,
+      const std::string& _version,
+      const std::vector<SlaveInfo::Capability>& _capabilites,
+      const Option<id::UUID>& resourceVersion);
 
   Master* const master;
   const SlaveID id;
-  const SlaveInfo info;
+  SlaveInfo info;
 
   const MachineID machineId;
 
@@ -227,15 +242,19 @@ struct Slave
   // This is used for reconciliation when the slave re-registers.
   multihashmap<FrameworkID, TaskID> killedTasks;
 
+  // Pending operations or terminal operations that have
+  // unacknowledged status updates on this agent.
+  hashmap<id::UUID, Operation*> operations;
+
   // Active offers on this slave.
   hashset<Offer*> offers;
 
   // Active inverse offers on this slave.
   hashset<InverseOffer*> inverseOffers;
 
-  // Resources for active task / executors. Note that we maintain multiple
-  // copies of each shared resource in `usedResources` as they are used by
-  // multiple tasks.
+  // Resources for active task / executors / operations.
+  // Note that we maintain multiple copies of each shared resource in
+  // `usedResources` as they are used by multiple tasks.
   hashmap<FrameworkID, Resources> usedResources;
 
   Resources offeredResources; // Offers.
@@ -244,15 +263,22 @@ struct Slave
   // persistent volumes, dynamic reservations, etc). These are either
   // in use by a task/executor, or are available for use and will be
   // re-offered to the framework.
+  // TODO(jieyu): `checkpointedResources` is only for agent default
+  // resources. Resources from resource providers are not included in
+  // this field. Consider removing this field.
   Resources checkpointedResources;
 
   // The current total resources of the slave. Note that this is
   // different from 'info.resources()' because this also considers
   // operations (e.g., CREATE, RESERVE) that have been applied and
-  // includes revocable resources as well.
+  // includes revocable resources and resources from resource
+  // providers as well.
   Resources totalResources;
 
   SlaveObserver* observer;
+
+  hashmap<Option<ResourceProviderID>, id::UUID> resourceVersions;
+  hashmap<ResourceProviderID, ResourceProviderInfo> resourceProviders;
 
 private:
   Slave(const Slave&);              // No copying.
@@ -273,7 +299,7 @@ struct HttpConnection
 {
   HttpConnection(const process::http::Pipe::Writer& _writer,
                  ContentType _contentType,
-                 UUID _streamId)
+                 id::UUID _streamId)
     : writer(_writer),
       contentType(_contentType),
       streamId(_streamId) {}
@@ -301,7 +327,64 @@ struct HttpConnection
 
   process::http::Pipe::Writer writer;
   ContentType contentType;
-  UUID streamId;
+  id::UUID streamId;
+};
+
+
+// This process periodically sends heartbeats to a given HTTP connection.
+// The `Message` template parameter is the type of the heartbeat event passed
+// into the heartbeater during construction, while the `Event` template
+// parameter is the versioned event type which is sent to the client.
+// The optional delay parameter is used to specify the delay period before it
+// sends the first heartbeat.
+template <typename Message, typename Event>
+class Heartbeater : public process::Process<Heartbeater<Message, Event>>
+{
+public:
+  Heartbeater(const std::string& _logMessage,
+              const Message& _heartbeatMessage,
+              const HttpConnection& _http,
+              const Duration& _interval,
+              const Option<Duration>& _delay = None())
+    : process::ProcessBase(process::ID::generate("heartbeater")),
+      logMessage(_logMessage),
+      heartbeatMessage(_heartbeatMessage),
+      http(_http),
+      interval(_interval),
+      delay(_delay) {}
+
+protected:
+  virtual void initialize() override
+  {
+    if (delay.isSome()) {
+      process::delay(
+          delay.get(),
+          this,
+          &Heartbeater<Message, Event>::heartbeat);
+    } else {
+      heartbeat();
+    }
+  }
+
+private:
+  void heartbeat()
+  {
+    // Only send a heartbeat if the connection is not closed.
+    if (http.closed().isPending()) {
+      VLOG(2) << "Sending heartbeat to " << logMessage;
+
+      Message message(heartbeatMessage);
+      http.send<Message, Event>(message);
+    }
+
+    process::delay(interval, this, &Heartbeater<Message, Event>::heartbeat);
+  }
+
+  const std::string logMessage;
+  const Message heartbeatMessage;
+  HttpConnection http;
+  const Duration interval;
+  const Option<Duration> delay;
 };
 
 
@@ -357,7 +440,7 @@ public:
   void reviveOffers(
       const process::UPID& from,
       const FrameworkID& frameworkId,
-      const std::string& role);
+      const std::vector<std::string>& role);
 
   void killTask(
       const process::UPID& from,
@@ -387,21 +470,11 @@ public:
 
   void registerSlave(
       const process::UPID& from,
-      const SlaveInfo& slaveInfo,
-      const std::vector<Resource>& checkpointedResources,
-      const std::string& version,
-      const std::vector<SlaveInfo::Capability>& agentCapabilities);
+      RegisterSlaveMessage&& registerSlaveMessage);
 
   void reregisterSlave(
       const process::UPID& from,
-      const SlaveInfo& slaveInfo,
-      const std::vector<Resource>& checkpointedResources,
-      const std::vector<ExecutorInfo>& executorInfos,
-      const std::vector<Task>& tasks,
-      const std::vector<FrameworkInfo>& frameworks,
-      const std::vector<Archive::Framework>& completedFrameworks,
-      const std::string& version,
-      const std::vector<SlaveInfo::Capability>& agentCapabilities);
+      ReregisterSlaveMessage&& incomingMessage);
 
   void unregisterSlave(
       const process::UPID& from,
@@ -416,6 +489,9 @@ public:
       const FrameworkID& frameworkId,
       const std::vector<TaskStatus>& statuses);
 
+  void updateOperationStatus(
+      const UpdateOperationStatusMessage& update);
+
   void exitedExecutor(
       const process::UPID& from,
       const SlaveID& slaveId,
@@ -423,9 +499,7 @@ public:
       const ExecutorID& executorId,
       int32_t status);
 
-  void updateSlave(
-      const SlaveID& slaveId,
-      const Resources& oversubscribedResources);
+  void updateSlave(UpdateSlaveMessage&& message);
 
   void updateUnavailability(
       const MachineID& machineId,
@@ -434,6 +508,8 @@ public:
   void markUnreachable(
       const SlaveID& slaveId,
       const std::string& message);
+
+  void markGone(Slave* slave, const TimeInfo& goneTime);
 
   void authenticate(
       const process::UPID& from,
@@ -472,18 +548,18 @@ public:
   }
 
 protected:
-  virtual void initialize();
-  virtual void finalize();
+  void initialize() override;
+  void finalize() override;
 
-  virtual void visit(const process::MessageEvent& event);
-  virtual void visit(const process::ExitedEvent& event);
+  void consume(process::MessageEvent&& event) override;
+  void consume(process::ExitedEvent&& event) override;
 
-  virtual void exited(const process::UPID& pid);
+  void exited(const process::UPID& pid) override;
   void exited(const FrameworkID& frameworkId, const HttpConnection& http);
   void _exited(Framework* framework);
 
   // Invoked upon noticing a subscriber disconnection.
-  void exited(const UUID& id);
+  void exited(const id::UUID& id);
 
   void agentReregisterTimeout(const SlaveID& slaveId);
   Nothing _agentReregisterTimeout(const SlaveID& slaveId);
@@ -493,12 +569,12 @@ protected:
   // 'principal' being None indicates it is throttled by
   // 'defaultLimiter'.
   void throttled(
-      const process::MessageEvent& event,
+      process::MessageEvent&& event,
       const Option<std::string>& principal);
 
-  // Continuations of visit().
-  void _visit(const process::MessageEvent& event);
-  void _visit(const process::ExitedEvent& event);
+  // Continuations of consume().
+  void _consume(process::MessageEvent&& event);
+  void _consume(process::ExitedEvent&& event);
 
   // Helper method invoked when the capacity for a framework
   // principal is exceeded.
@@ -512,28 +588,34 @@ protected:
   void recoveredSlavesTimeout(const Registry& registry);
 
   void _registerSlave(
-      const SlaveInfo& slaveInfo,
       const process::UPID& pid,
-      const std::vector<Resource>& checkpointedResources,
-      const std::string& version,
-      const std::vector<SlaveInfo::Capability>& agentCapabilities,
+      RegisterSlaveMessage&& registerSlaveMessage,
+      const Option<std::string>& principal,
+      const process::Future<bool>& authorized);
+
+  void __registerSlave(
+      const process::UPID& pid,
+      RegisterSlaveMessage&& registerSlaveMessage,
       const process::Future<bool>& admit);
 
   void _reregisterSlave(
-      const SlaveInfo& slaveInfo,
       const process::UPID& pid,
-      const std::vector<Resource>& checkpointedResources,
-      const std::vector<ExecutorInfo>& executorInfos,
-      const std::vector<Task>& tasks,
-      const std::vector<FrameworkInfo>& frameworks,
-      const std::vector<Archive::Framework>& completedFrameworks,
-      const std::string& version,
-      const std::vector<SlaveInfo::Capability>& agentCapabilities,
-      const process::Future<bool>& readmit);
+      ReregisterSlaveMessage&& incomingMessage,
+      const Option<std::string>& principal,
+      const process::Future<bool>& authorized);
 
   void __reregisterSlave(
+      const process::UPID& pid,
+      ReregisterSlaveMessage&& incomingMessage,
+      const process::Future<bool>& readmit);
+
+  void ___reregisterSlave(
+      const process::UPID& pid,
+      ReregisterSlaveMessage&& incomingMessage,
+      const process::Future<bool>& updated);
+
+  void updateSlaveFrameworks(
       Slave* slave,
-      const std::vector<Task>& tasks,
       const std::vector<FrameworkInfo>& frameworks);
 
   // 'future' is the future returned by the authenticator.
@@ -558,21 +640,25 @@ protected:
   // When a slave that was previously registered with this master
   // re-registers, we need to reconcile the master's view of the
   // slave's tasks and executors.  This function also sends the
-  // `ReregisterSlaveMessage`.
+  // `SlaveReregisteredMessage`.
   void reconcileKnownSlave(
       Slave* slave,
       const std::vector<ExecutorInfo>& executors,
       const std::vector<Task>& tasks);
 
   // Add a framework.
-  void addFramework(Framework* framework);
+  void addFramework(
+      Framework* framework,
+      const std::set<std::string>& suppressedRoles);
 
   // Recover a framework from its `FrameworkInfo`. This happens after
   // master failover, when an agent running one of the framework's
   // tasks re-registers or when the framework itself re-registers,
   // whichever happens first. The result of this function is a
   // registered, inactive framework with state `RECOVERED`.
-  void recoverFramework(const FrameworkInfo& info);
+  void recoverFramework(
+      const FrameworkInfo& info,
+      const std::set<std::string>& suppressedRoles);
 
   // Transition a framework from `RECOVERED` to `CONNECTED` state and
   // activate it. This happens at most once after master failover, the
@@ -582,7 +668,8 @@ protected:
       Framework* framework,
       const FrameworkInfo& frameworkInfo,
       const Option<process::UPID>& pid,
-      const Option<HttpConnection>& http);
+      const Option<HttpConnection>& http,
+      const std::set<std::string>& suppressedRoles);
 
   // Replace the scheduler for a framework with a new process ID, in
   // the event of a scheduler failover.
@@ -604,7 +691,8 @@ protected:
 
   void updateFramework(
       Framework* framework,
-      const FrameworkInfo& frameworkInfo);
+      const FrameworkInfo& frameworkInfo,
+      const std::set<std::string>& suppressedRoles);
 
   void disconnect(Framework* framework);
   void deactivate(Framework* framework, bool rescind);
@@ -615,8 +703,7 @@ protected:
   // Add a slave.
   void addSlave(
       Slave* slave,
-      const std::vector<Archive::Framework>& completedFrameworks =
-        std::vector<Archive::Framework>());
+      std::vector<Archive::Framework>&& completedFrameworks);
 
   void _markUnreachable(
       Slave* slave,
@@ -649,6 +736,11 @@ protected:
       const std::string& removalCause,
       Option<process::metrics::Counter> reason = None());
 
+  void __removeSlave(
+      Slave* slave,
+      const std::string& message,
+      const Option<TimeInfo>& unreachableTime);
+
   // Validates that the framework is authenticated, if required.
   Option<Error> validateFrameworkAuthentication(
       const FrameworkInfo& frameworkInfo,
@@ -659,6 +751,9 @@ protected:
   process::Future<bool> authorizeFramework(
       const FrameworkInfo& frameworkInfo);
 
+  // Returns whether the principal is authorized to (re-)register an agent.
+  process::Future<bool> authorizeSlave(const Option<std::string>& principal);
+
   // Returns whether the task is authorized.
   // Returns failure for transient authorization failures.
   process::Future<bool> authorizeTask(
@@ -666,7 +761,7 @@ protected:
       Framework* framework);
 
   /**
-   * Authorizes a `RESERVE` offer operation.
+   * Authorizes a `RESERVE` operation.
    *
    * Returns whether the Reserve operation is authorized with the
    * provided principal. This function is used for authorization of
@@ -687,7 +782,7 @@ protected:
       const Option<process::http::authentication::Principal>& principal);
 
   /**
-   * Authorizes an `UNRESERVE` offer operation.
+   * Authorizes an `UNRESERVE` operation.
    *
    * Returns whether the Unreserve operation is authorized with the
    * provided principal. This function is used for authorization of
@@ -708,7 +803,7 @@ protected:
       const Option<process::http::authentication::Principal>& principal);
 
   /**
-   * Authorizes a `CREATE` offer operation.
+   * Authorizes a `CREATE` operation.
    *
    * Returns whether the Create operation is authorized with the provided
    * principal. This function is used for authorization of operations
@@ -729,7 +824,7 @@ protected:
       const Option<process::http::authentication::Principal>& principal);
 
   /**
-   * Authorizes a `DESTROY` offer operation.
+   * Authorizes a `DESTROY` operation.
    *
    * Returns whether the Destroy operation is authorized with the provided
    * principal. This function is used for authorization of operations
@@ -759,14 +854,32 @@ protected:
   // terminal.
   void updateTask(Task* task, const StatusUpdate& update);
 
-  // Removes the task.
-  void removeTask(Task* task);
+  // Removes the task. `unreachable` indicates whether the task is removed due
+  // to being unreachable. Note that we cannot rely on the task state because
+  // it may not reflect unreachability due to being set to TASK_LOST for
+  // backwards compatibility.
+  void removeTask(Task* task, bool unreachable = false);
 
   // Remove an executor and recover its resources.
   void removeExecutor(
       Slave* slave,
       const FrameworkID& frameworkId,
       const ExecutorID& executorId);
+
+  // Adds the given operation to the framework and the agent.
+  void addOperation(
+      Framework* framework,
+      Slave* slave,
+      Operation* operation);
+
+  // Transitions the operation, and recovers resources if the
+  // operation becomes terminal.
+  void updateOperation(
+      Operation* operation,
+      const UpdateOperationStatusMessage& update);
+
+  // Remove the operation.
+  void removeOperation(Operation* operation);
 
   // Attempts to update the allocator by applying the given operation.
   // If successful, updates the slave's resources, sends a
@@ -806,10 +919,15 @@ protected:
   SlaveID newSlaveId();
 
 private:
-  // Updates the slave's resources by applying the given operation.
-  // It also sends a 'CheckpointResourcesMessage' to the slave with
-  // the updated checkpointed resources.
-  void _apply(Slave* slave, const Offer::Operation& operation);
+  // Updates the agent's resources by applying the given operation.
+  // Sends either `ApplyOperationMessage` or
+  // `CheckpointResourcesMessage` (with updated checkpointed
+  // resources) to the agent depending on if the agent has
+  // `RESOURCE_PROVIDER` capability.
+  void _apply(
+      Slave* slave,
+      Framework* framework,
+      const Offer::Operation& operationInfo);
 
   void drop(
       const process::UPID& from,
@@ -849,6 +967,7 @@ private:
       HttpConnection http,
       const FrameworkInfo& frameworkInfo,
       bool force,
+      const std::set<std::string>& suppressedRoles,
       const process::Future<bool>& authorized);
 
   void subscribe(
@@ -859,10 +978,13 @@ private:
       const process::UPID& from,
       const FrameworkInfo& frameworkInfo,
       bool force,
+      const std::set<std::string>& suppressedRoles,
       const process::Future<bool>& authorized);
 
   // Subscribes a client to the 'api/vX' endpoint.
-  void subscribe(const HttpConnection& http);
+  void subscribe(
+      const HttpConnection& http,
+      const Option<process::http::authentication::Principal>& principal);
 
   void teardown(Framework* framework);
 
@@ -905,9 +1027,17 @@ private:
       Framework* framework,
       const scheduler::Call::Acknowledge& acknowledge);
 
+  void acknowledgeOperationStatus(
+      Framework* framework,
+      const scheduler::Call::AcknowledgeOperationStatus& acknowledge);
+
   void reconcile(
       Framework* framework,
       const scheduler::Call::Reconcile& reconcile);
+
+  void reconcileOperations(
+      Framework* framework,
+      const scheduler::Call::ReconcileOperations& reconcile);
 
   void message(
       Framework* framework,
@@ -931,7 +1061,8 @@ private:
   void doRegistryGc();
 
   void _doRegistryGc(
-      const hashset<SlaveID>& toRemove,
+      const hashset<SlaveID>& toRemoveUnreachable,
+      const hashset<SlaveID>& toRemoveGone,
       const process::Future<bool>& registrarResult);
 
   process::Future<bool> authorizeLogAccess(
@@ -1057,15 +1188,7 @@ private:
         const Option<process::http::authentication::Principal>& principal,
         const mesos::quota::QuotaInfo& quotaInfo) const;
 
-    // TODO(mpark): The following functions `authorizeSetQuota` and
-    // `authorizeRemoveQuota` should be replaced with `authorizeUpdateQuota` at
-    // the end of deprecation cycle which started with 1.0.
-
-    process::Future<bool> authorizeSetQuota(
-        const Option<process::http::authentication::Principal>& principal,
-        const mesos::quota::QuotaInfo& quotaInfo) const;
-
-    process::Future<bool> authorizeRemoveQuota(
+    process::Future<bool> authorizeUpdateQuota(
         const Option<process::http::authentication::Principal>& principal,
         const mesos::quota::QuotaInfo& quotaInfo) const;
 
@@ -1171,10 +1294,6 @@ private:
     explicit Http(Master* _master) : master(_master),
                                      quotaHandler(_master),
                                      weightsHandler(_master) {}
-
-    // Logs the request, route handlers can compose this with the
-    // desired request handler to get consistent request logging.
-    static void log(const process::http::Request& request);
 
     // /api/v1
     process::Future<process::http::Response> api(
@@ -1344,31 +1463,49 @@ private:
             principal) const;
 
     process::Future<process::http::Response> _teardown(
+        const FrameworkID& id,
+        const Option<process::http::authentication::Principal>&
+            principal) const;
+
+    process::Future<process::http::Response> __teardown(
         const FrameworkID& id) const;
 
     process::Future<process::http::Response> _updateMaintenanceSchedule(
-        const mesos::maintenance::Schedule& schedule) const;
+        const mesos::maintenance::Schedule& schedule,
+        const Option<process::http::authentication::Principal>&
+            principal) const;
 
-    mesos::maintenance::Schedule _getMaintenanceSchedule() const;
+    process::Future<process::http::Response> __updateMaintenanceSchedule(
+        const mesos::maintenance::Schedule& schedule,
+        const process::Owned<ObjectApprover>& approver) const;
 
-    process::Future<mesos::maintenance::ClusterStatus>
-      _getMaintenanceStatus() const;
+    process::Future<process::http::Response> ___updateMaintenanceSchedule(
+        const mesos::maintenance::Schedule& schedule,
+        bool applied) const;
+
+    mesos::maintenance::Schedule _getMaintenanceSchedule(
+        const process::Owned<ObjectApprover>& approver) const;
+
+    process::Future<mesos::maintenance::ClusterStatus> _getMaintenanceStatus(
+        const process::Owned<ObjectApprover>& approver) const;
 
     process::Future<process::http::Response> _startMaintenance(
-        const google::protobuf::RepeatedPtrField<MachineID>& machineIds) const;
+        const google::protobuf::RepeatedPtrField<MachineID>& machineIds,
+        const process::Owned<ObjectApprover>& approver) const;
 
     process::Future<process::http::Response> _stopMaintenance(
-        const google::protobuf::RepeatedPtrField<MachineID>& machineIds) const;
+        const google::protobuf::RepeatedPtrField<MachineID>& machineIds,
+        const process::Owned<ObjectApprover>& approver) const;
 
     process::Future<process::http::Response> _reserve(
         const SlaveID& slaveId,
-        const Resources& resources,
+        const google::protobuf::RepeatedPtrField<Resource>& resources,
         const Option<process::http::authentication::Principal>&
             principal) const;
 
     process::Future<process::http::Response> _unreserve(
         const SlaveID& slaveId,
-        const Resources& resources,
+        const google::protobuf::RepeatedPtrField<Resource>& resources,
         const Option<process::http::authentication::Principal>&
             principal) const;
 
@@ -1419,7 +1556,8 @@ private:
         const Option<process::http::authentication::Principal>& principal,
         ContentType contentType) const;
 
-    mesos::master::Response::GetAgents _getAgents() const;
+    mesos::master::Response::GetAgents _getAgents(
+        const process::Owned<AuthorizationAcceptor>& rolesAcceptor) const;
 
     process::Future<process::http::Response> getFlags(
         const mesos::master::Call& call,
@@ -1545,7 +1683,8 @@ private:
     mesos::master::Response::GetState _getState(
         const process::Owned<ObjectApprover>& frameworksApprover,
         const process::Owned<ObjectApprover>& taskApprover,
-        const process::Owned<ObjectApprover>& executorsApprover) const;
+        const process::Owned<ObjectApprover>& executorsApprover,
+        const process::Owned<AuthorizationAcceptor>& rolesAcceptor) const;
 
     process::Future<process::http::Response> subscribe(
         const mesos::master::Call& call,
@@ -1556,6 +1695,19 @@ private:
         const mesos::master::Call& call,
         const Option<process::http::authentication::Principal>& principal,
         ContentType contentType) const;
+
+    process::Future<process::http::Response> teardown(
+        const mesos::master::Call& call,
+        const Option<process::http::authentication::Principal>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> markAgentGone(
+        const mesos::master::Call& call,
+        const Option<process::http::authentication::Principal>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> _markAgentGone(
+        const SlaveID& slaveId) const;
 
     Master* master;
 
@@ -1574,6 +1726,8 @@ private:
   friend struct Framework;
   friend struct Metrics;
   friend struct Slave;
+  friend struct SlavesWriter;
+  friend struct Subscriber;
 
   // NOTE: Since 'getOffer', 'getInverseOffer' and 'slaves' are
   // protected, we need to make the following functions friends.
@@ -1635,14 +1789,16 @@ private:
     // failover. Slaves are removed from this collection when they
     // either re-register with the master or are marked unreachable
     // because they do not re-register before `recoveredTimer` fires.
+    // We must not answer questions related to these slaves (e.g.,
+    // during task reconciliation) until we determine their fate
+    // because their are in this transitioning state.
     hashmap<SlaveID, SlaveInfo> recovered;
 
-    // Slaves that are in the process of registering.
+    // Agents that are in the process of (re-)registering. They are
+    // maintained here while the (re-)registration is in progress and
+    // possibly pending in the authorizer or the registrar in order
+    // to help deduplicate (re-)registration requests.
     hashset<process::UPID> registering;
-
-    // Only those slaves that are re-registering for the first time
-    // with this master. We must not answer questions related to
-    // these slaves until the registrar determines their fate.
     hashset<SlaveID> reregistering;
 
     // Registered slaves are indexed by SlaveID and UPID. Note that
@@ -1717,9 +1873,13 @@ private:
     // Slaves that are in the process of being marked unreachable.
     hashset<SlaveID> markingUnreachable;
 
+    // Slaves that are in the process of being marked gone.
+    hashset<SlaveID> markingGone;
+
     // This collection includes agents that have gracefully shutdown,
-    // as well as those that have been marked unreachable. We keep a
-    // cache here to prevent this from growing in an unbounded manner.
+    // as well as those that have been marked unreachable or gone. We
+    // keep a cache here to prevent this from growing in an unbounded
+    // manner.
     //
     // TODO(bmahler): Ideally we could use a cache with set semantics.
     //
@@ -1736,6 +1896,13 @@ private:
     // GC behavior is governed by the `registry_gc_interval`,
     // `registry_max_agent_age`, and `registry_max_agent_count` flags.
     LinkedHashMap<SlaveID, TimeInfo> unreachable;
+
+    // Slaves that have been marked gone. We recover this from the
+    // registry, so it includes slaves marked as gone by other instances
+    // of the master. Note that we use a LinkedHashMap to ensure the order
+    // of elements here matches the order in the registry's gone list, which
+    // matches the order in which agents are marked gone.
+    LinkedHashMap<SlaveID, TimeInfo> gone;
 
     // This rate limiter is used to limit the removal of slaves failing
     // health checks.
@@ -1791,12 +1958,38 @@ private:
     // might only be interested in a subset of events.
     struct Subscriber
     {
-      Subscriber(const HttpConnection& _http)
-        : http(_http) {}
+      Subscriber(
+          Master* _master,
+          const HttpConnection& _http,
+          const Option<process::http::authentication::Principal> _principal)
+        : master(_master),
+          http(_http),
+          principal(_principal)
+      {
+        mesos::master::Event event;
+        event.set_type(mesos::master::Event::HEARTBEAT);
+
+        heartbeater =
+          process::Owned<Heartbeater<mesos::master::Event, v1::master::Event>>(
+              new Heartbeater<mesos::master::Event, v1::master::Event>(
+                  "subscriber " + stringify(http.streamId),
+                  event,
+                  http,
+                  DEFAULT_HEARTBEAT_INTERVAL,
+                  DEFAULT_HEARTBEAT_INTERVAL));
+
+        process::spawn(heartbeater.get());
+      }
 
       // Not copyable, not assignable.
       Subscriber(const Subscriber&) = delete;
       Subscriber& operator=(const Subscriber&) = delete;
+
+      void send(const mesos::master::Event& event,
+          const process::Owned<AuthorizationAcceptor>& authorizeRole,
+          const process::Owned<AuthorizationAcceptor>& authorizeFramework,
+          const process::Owned<AuthorizationAcceptor>& authorizeTask,
+          const process::Owned<AuthorizationAcceptor>& authorizeExecutor);
 
       ~Subscriber()
       {
@@ -1805,9 +1998,16 @@ private:
         // after passing ownership to the `Subscriber` object. See MESOS-5843
         // for more details.
         http.close();
+
+        terminate(heartbeater.get());
+        wait(heartbeater.get());
       }
 
+      Master* master;
       HttpConnection http;
+      process::Owned<Heartbeater<mesos::master::Event, v1::master::Event>>
+        heartbeater;
+      const Option<process::http::authentication::Principal> principal;
     };
 
     // Sends the event to all subscribers connected to the 'api/vX' endpoint.
@@ -1815,7 +2015,7 @@ private:
 
     // Active subscribers to the 'api/vX' endpoint keyed by the stream
     // identifier.
-    hashmap<UUID, process::Owned<Subscriber>> subscribed;
+    hashmap<id::UUID, process::Owned<Subscriber>> subscribed;
   } subscribers;
 
   hashmap<OfferID, Offer*> offers;
@@ -1936,261 +2136,9 @@ private:
 };
 
 
-// Add a new slave to the list of admitted slaves.
-class AdmitSlave : public Operation
-{
-public:
-  explicit AdmitSlave(const SlaveInfo& _info) : info(_info)
-  {
-    CHECK(info.has_id()) << "SlaveInfo is missing the 'id' field";
-  }
-
-protected:
-  virtual Try<bool> perform(Registry* registry, hashset<SlaveID>* slaveIDs)
-  {
-    // Check if this slave is currently admitted. This should only
-    // happen if there is a slaveID collision, but that is extremely
-    // unlikely in practice: slaveIDs are prefixed with the master ID,
-    // which is a randomly generated UUID.
-    if (slaveIDs->contains(info.id())) {
-      return Error("Agent already admitted");
-    }
-
-    Registry::Slave* slave = registry->mutable_slaves()->add_slaves();
-    slave->mutable_info()->CopyFrom(info);
-    slaveIDs->insert(info.id());
-    return true; // Mutation.
-  }
-
-private:
-  const SlaveInfo info;
-};
-
-
-// Move a slave from the list of admitted slaves to the list of
-// unreachable slaves.
-class MarkSlaveUnreachable : public Operation
-{
-public:
-  MarkSlaveUnreachable(const SlaveInfo& _info, const TimeInfo& _unreachableTime)
-    : info(_info), unreachableTime(_unreachableTime) {
-    CHECK(info.has_id()) << "SlaveInfo is missing the 'id' field";
-  }
-
-protected:
-  virtual Try<bool> perform(Registry* registry, hashset<SlaveID>* slaveIDs)
-  {
-    // As currently implemented, this should not be possible: the
-    // master will only mark slaves unreachable that are currently
-    // admitted.
-    if (!slaveIDs->contains(info.id())) {
-      return Error("Agent not yet admitted");
-    }
-
-    for (int i = 0; i < registry->slaves().slaves().size(); i++) {
-      const Registry::Slave& slave = registry->slaves().slaves(i);
-
-      if (slave.info().id() == info.id()) {
-        registry->mutable_slaves()->mutable_slaves()->DeleteSubrange(i, 1);
-        slaveIDs->erase(info.id());
-
-        Registry::UnreachableSlave* unreachable =
-          registry->mutable_unreachable()->add_slaves();
-
-        unreachable->mutable_id()->CopyFrom(info.id());
-        unreachable->mutable_timestamp()->CopyFrom(unreachableTime);
-
-        return true; // Mutation.
-      }
-    }
-
-    // Should not happen.
-    return Error("Failed to find agent " + stringify(info.id()));
-  }
-
-private:
-  const SlaveInfo info;
-  const TimeInfo unreachableTime;
-};
-
-
-// Add a slave back to the list of admitted slaves. The slave will
-// typically be in the "unreachable" list; if so, it is removed from
-// that list. The slave might also be in the "admitted" list already.
-// Finally, the slave might be in neither the "unreachable" or
-// "admitted" lists, if its metadata has been garbage collected from
-// the registry.
-class MarkSlaveReachable : public Operation
-{
-public:
-  explicit MarkSlaveReachable(const SlaveInfo& _info) : info(_info) {
-    CHECK(info.has_id()) << "SlaveInfo is missing the 'id' field";
-  }
-
-protected:
-  virtual Try<bool> perform(Registry* registry, hashset<SlaveID>* slaveIDs)
-  {
-    // A slave might try to reregister that appears in the list of
-    // admitted slaves. This can occur when the master fails over:
-    // agents will usually attempt to reregister with the new master
-    // before they are marked unreachable. In this situation, the
-    // registry is already in the correct state, so no changes are
-    // needed.
-    if (slaveIDs->contains(info.id())) {
-      return false; // No mutation.
-    }
-
-    // Check whether the slave is in the unreachable list.
-    // TODO(neilc): Optimize this to avoid linear scan.
-    bool found = false;
-    for (int i = 0; i < registry->unreachable().slaves().size(); i++) {
-      const Registry::UnreachableSlave& slave =
-        registry->unreachable().slaves(i);
-
-      if (slave.id() == info.id()) {
-        registry->mutable_unreachable()->mutable_slaves()->DeleteSubrange(i, 1);
-        found = true;
-        break;
-      }
-    }
-
-    if (!found) {
-      LOG(WARNING) << "Allowing UNKNOWN agent to reregister: " << info;
-    }
-
-    // Add the slave to the admitted list, even if we didn't find it
-    // in the unreachable list. This accounts for when the slave was
-    // unreachable for a long time, was GC'd from the unreachable
-    // list, but then eventually reregistered.
-    Registry::Slave* slave = registry->mutable_slaves()->add_slaves();
-    slave->mutable_info()->CopyFrom(info);
-    slaveIDs->insert(info.id());
-
-    return true; // Mutation.
-  }
-
-private:
-  const SlaveInfo info;
-};
-
-
-class PruneUnreachable : public Operation
-{
-public:
-  explicit PruneUnreachable(const hashset<SlaveID>& _toRemove)
-    : toRemove(_toRemove) {}
-
-protected:
-  virtual Try<bool> perform(Registry* registry, hashset<SlaveID>* /*slaveIDs*/)
-  {
-    // Attempt to remove the SlaveIDs in `toRemove` from the
-    // unreachable list. Some SlaveIDs in `toRemove` might not appear
-    // in the registry; this is possible if there was a concurrent
-    // registry operation.
-    //
-    // TODO(neilc): This has quadratic worst-case behavior, because
-    // `DeleteSubrange` for a `repeated` object takes linear time.
-    bool mutate = false;
-    int i = 0;
-    while (i < registry->unreachable().slaves().size()) {
-      const Registry::UnreachableSlave& slave =
-        registry->unreachable().slaves(i);
-
-      if (toRemove.contains(slave.id())) {
-        Registry::UnreachableSlaves* unreachable =
-          registry->mutable_unreachable();
-
-        unreachable->mutable_slaves()->DeleteSubrange(i, i+1);
-        mutate = true;
-        continue;
-      }
-
-      i++;
-    }
-
-    return mutate;
-  }
-
-private:
-  const hashset<SlaveID> toRemove;
-};
-
-
-// Implementation of slave removal Registrar operation.
-class RemoveSlave : public Operation
-{
-public:
-  explicit RemoveSlave(const SlaveInfo& _info) : info(_info)
-  {
-    CHECK(info.has_id()) << "SlaveInfo is missing the 'id' field";
-  }
-
-protected:
-  virtual Try<bool> perform(Registry* registry, hashset<SlaveID>* slaveIDs)
-  {
-    for (int i = 0; i < registry->slaves().slaves().size(); i++) {
-      const Registry::Slave& slave = registry->slaves().slaves(i);
-      if (slave.info().id() == info.id()) {
-        registry->mutable_slaves()->mutable_slaves()->DeleteSubrange(i, 1);
-        slaveIDs->erase(info.id());
-        return true; // Mutation.
-      }
-    }
-
-    // Should not happen: the master will only try to remove agents
-    // that are currently admitted.
-    return Error("Agent not yet admitted");
-  }
-
-private:
-  const SlaveInfo info;
-};
-
-
 inline std::ostream& operator<<(
     std::ostream& stream,
     const Framework& framework);
-
-
-// This process periodically sends heartbeats to a scheduler on the
-// given HTTP connection.
-class Heartbeater : public process::Process<Heartbeater>
-{
-public:
-  Heartbeater(const FrameworkID& _frameworkId,
-              const HttpConnection& _http,
-              const Duration& _interval)
-    : process::ProcessBase(process::ID::generate("heartbeater")),
-      frameworkId(_frameworkId),
-      http(_http),
-      interval(_interval) {}
-
-protected:
-  virtual void initialize() override
-  {
-    heartbeat();
-  }
-
-private:
-  void heartbeat()
-  {
-    // Only send a heartbeat if the connection is not closed.
-    if (http.closed().isPending()) {
-      VLOG(1) << "Sending heartbeat to " << frameworkId;
-
-      scheduler::Event event;
-      event.set_type(scheduler::Event::HEARTBEAT);
-
-      http.send(event);
-    }
-
-    process::delay(interval, self(), &Self::heartbeat);
-  }
-
-  const FrameworkID frameworkId;
-  HttpConnection http;
-  const Duration interval;
-};
 
 
 // TODO(bmahler): Keeping the task and executor information in sync
@@ -2273,8 +2221,14 @@ struct Framework
     tasks[task->task_id()] = task;
 
     if (!Master::isRemovable(task->state())) {
-      totalUsedResources += task->resources();
-      usedResources[task->slave_id()] += task->resources();
+      // Note that we explicitly convert from protobuf to `Resources` once
+      // and then use the result for calculations to avoid performance penalty
+      // for multiple conversions and validations implied by `+=` with protobuf
+      // arguments.
+      // Conversion is safe, as resources have already passed validation.
+      const Resources resources = task->resources();
+      totalUsedResources += resources;
+      usedResources[task->slave_id()] += resources;
 
       // It's possible that we're not tracking the task's role for
       // this framework if the role is absent from the framework's
@@ -2346,26 +2300,27 @@ struct Framework
     }
   }
 
-  void addCompletedTask(const Task& task)
+  void addCompletedTask(Task&& task)
   {
     // TODO(neilc): We currently allow frameworks to reuse the task
     // IDs of completed tasks (although this is discouraged). This
     // means that there might be multiple completed tasks with the
     // same task ID. We should consider rejecting attempts to reuse
     // task IDs (MESOS-6779).
-    completedTasks.push_back(process::Owned<Task>(new Task(task)));
+    completedTasks.push_back(process::Owned<Task>(new Task(std::move(task))));
   }
 
   void addUnreachableTask(const Task& task)
   {
-    CHECK(protobuf::frameworkHasCapability(
-              info, FrameworkInfo::Capability::PARTITION_AWARE));
-
     // TODO(adam-mesos): Check if unreachable task already exists.
     unreachableTasks.set(task.task_id(), process::Owned<Task>(new Task(task)));
   }
 
-  void removeTask(Task* task)
+  // Removes the task. `unreachable` indicates whether the task is removed due
+  // to being unreachable. Note that we cannot rely on the task state because
+  // it may not reflect unreachability due to being set to TASK_LOST for
+  // backwards compatibility.
+  void removeTask(Task* task, bool unreachable)
   {
     CHECK(tasks.contains(task->task_id()))
       << "Unknown task " << task->task_id()
@@ -2375,10 +2330,12 @@ struct Framework
       recoverResources(task);
     }
 
-    if (task->state() == TASK_UNREACHABLE) {
+    if (unreachable) {
+      CHECK(task->state() == TASK_UNREACHABLE || task->state() == TASK_LOST)
+        << task->state();
       addUnreachableTask(*task);
     } else {
-      addCompletedTask(*task);
+      addCompletedTask(Task(*task));
     }
 
     tasks.erase(task->task_id());
@@ -2497,6 +2454,115 @@ struct Framework
     if (executors[slaveId].empty()) {
       executors.erase(slaveId);
     }
+  }
+
+  void addOperation(Operation* operation)
+  {
+    CHECK(operation->has_framework_id());
+
+    const FrameworkID& frameworkId = operation->framework_id();
+
+    Try<id::UUID> uuid = id::UUID::fromBytes(operation->uuid().value());
+    CHECK_SOME(uuid);
+
+    CHECK(!operations.contains(uuid.get()))
+      << "Duplicate operation '" << operation->info().id()
+      << "' (uuid: " << uuid->toString() << ") "
+      << "of framework " << frameworkId;
+
+    operations.put(uuid.get(), operation);
+
+    if (operation->info().has_id()) {
+      operationUUIDs.put(operation->info().id(), uuid.get());
+    }
+
+    if (!protobuf::isSpeculativeOperation(operation->info()) &&
+        !protobuf::isTerminalState(operation->latest_status().state())) {
+      Try<Resources> consumed =
+        protobuf::getConsumedResources(operation->info());
+      CHECK_SOME(consumed);
+
+      CHECK(operation->has_slave_id())
+        << "External resource provider is not supported yet";
+
+      const SlaveID& slaveId = operation->slave_id();
+
+      totalUsedResources += consumed.get();
+      usedResources[slaveId] += consumed.get();
+
+      // It's possible that we're not tracking the role from the
+      // resources in the operation for this framework if the role is
+      // absent from the framework's set of roles. In this case, we
+      // track the role's allocation for this framework.
+      foreachkey (const std::string& role, consumed->allocations()) {
+        if (!isTrackedUnderRole(role)) {
+          trackUnderRole(role);
+        }
+      }
+    }
+  }
+
+  void recoverResources(Operation* operation)
+  {
+    CHECK(operation->has_slave_id())
+      << "External resource provider is not supported yet";
+
+    const SlaveID& slaveId = operation->slave_id();
+
+    if (protobuf::isSpeculativeOperation(operation->info())) {
+      return;
+    }
+
+    Try<Resources> consumed = protobuf::getConsumedResources(operation->info());
+    CHECK_SOME(consumed);
+
+    CHECK(totalUsedResources.contains(consumed.get()))
+      << "Tried to recover resources " << consumed.get()
+      << " which do not seem used";
+
+    CHECK(usedResources[slaveId].contains(consumed.get()))
+      << "Tried to recover resources " << consumed.get() << " of agent "
+      << slaveId << " which do not seem used";
+
+    totalUsedResources -= consumed.get();
+    usedResources[slaveId] -= consumed.get();
+    if (usedResources[slaveId].empty()) {
+      usedResources.erase(slaveId);
+    }
+
+    // If we are no longer subscribed to the role to which these
+    // resources are being returned to, and we have no more resources
+    // allocated to us for that role, stop tracking the framework
+    // under the role.
+    foreachkey (const std::string& role, consumed->allocations()) {
+      auto allocatedToRole = [&role](const Resource& resource) {
+        return resource.allocation_info().role() == role;
+      };
+
+      if (roles.count(role) == 0 &&
+          totalUsedResources.filter(allocatedToRole).empty()) {
+        CHECK(totalOfferedResources.filter(allocatedToRole).empty());
+        untrackUnderRole(role);
+      }
+    }
+  }
+
+  void removeOperation(Operation* operation)
+  {
+    Try<id::UUID> uuid = id::UUID::fromBytes(operation->uuid().value());
+    CHECK_SOME(uuid);
+
+    CHECK(operations.contains(uuid.get()))
+      << "Unknown operation '" << operation->info().id()
+      << "' (uuid: " << uuid->toString() << ") "
+      << "of framework " << operation->framework_id();
+
+    if (!protobuf::isSpeculativeOperation(operation->info()) &&
+        !protobuf::isTerminalState(operation->latest_status().state())) {
+      recoverResources(operation);
+    }
+
+    operations.erase(uuid.get());
   }
 
   const FrameworkID id() const { return info.id(); }
@@ -2679,8 +2745,15 @@ struct Framework
 
     // TODO(vinod): Make heartbeat interval configurable and include
     // this information in the SUBSCRIBED response.
+    scheduler::Event event;
+    event.set_type(scheduler::Event::HEARTBEAT);
+
     heartbeater =
-      new Heartbeater(info.id(), http.get(), DEFAULT_HEARTBEAT_INTERVAL);
+      new Heartbeater<scheduler::Event, v1::scheduler::Event>(
+          "framework " + stringify(info.id()),
+          event,
+          http.get(),
+          DEFAULT_HEARTBEAT_INTERVAL);
 
     process::spawn(heartbeater.get().get());
   }
@@ -2727,15 +2800,12 @@ struct Framework
   // fixed-size cache to avoid consuming too much memory. We use
   // boost::circular_buffer rather than BoundedHashMap because there
   // can be multiple completed tasks with the same task ID.
-  //
-  // NOTE: When an agent is marked unreachable, non-partition-aware
-  // tasks are marked TASK_LOST and stored here; partition-aware tasks
-  // are marked TASK_UNREACHABLE and stored in `unreachableTasks`.
   boost::circular_buffer<process::Owned<Task>> completedTasks;
 
-  // Partition-aware tasks running on agents that have been marked
-  // unreachable. We only keep a fixed-size cache to avoid consuming
-  // too much memory.
+  // When an agent is marked unreachable, tasks running on it are stored
+  // here. We only keep a fixed-size cache to avoid consuming too much memory.
+  // NOTE: Non-partition-aware unreachable tasks in this map are marked
+  // TASK_LOST instead of TASK_UNREACHABLE for backward compatibility.
   BoundedHashMap<TaskID, process::Owned<Task>> unreachableTasks;
 
   hashset<Offer*> offers; // Active offers for framework.
@@ -2746,6 +2816,14 @@ struct Framework
   // and `removeExecutor()` are used, and provide a const view into
   // the executors.
   hashmap<SlaveID, hashmap<ExecutorID, ExecutorInfo>> executors;
+
+  // Pending operations or terminal operations that have
+  // unacknowledged status updates.
+  hashmap<id::UUID, Operation*> operations;
+
+  // The map from the framework-specified operation ID to the
+  // corresponding internal operation UUID.
+  hashmap<OperationID, id::UUID> operationUUIDs;
 
   // NOTE: For the used and offered resources below, we keep the
   // total as well as partitioned by SlaveID.
@@ -2769,7 +2847,7 @@ struct Framework
   // TODO(mpark): Strip the non-scalar resources out of the totals
   // in order to avoid reporting incorrect statistics (MESOS-2623).
 
-  // Active task / executor resources.
+  // Active task / executor / operation resources.
   Resources totalUsedResources;
 
   // Note that we maintain multiple copies of each shared resource in
@@ -2781,7 +2859,8 @@ struct Framework
   hashmap<SlaveID, Resources> offeredResources;
 
   // This is only set for HTTP frameworks.
-  Option<process::Owned<Heartbeater>> heartbeater;
+  Option<process::Owned<Heartbeater<scheduler::Event, v1::scheduler::Event>>>
+    heartbeater;
 
 private:
   Framework(Master* const _master,
@@ -2847,28 +2926,20 @@ struct Role
     frameworks.erase(framework->id());
   }
 
-  Resources resources() const
+  Resources allocatedResources() const
   {
     Resources resources;
 
     auto allocatedTo = [](const std::string& role) {
       return [role](const Resource& resource) {
+        CHECK(resource.has_allocation_info());
         return resource.allocation_info().role() == role;
       };
     };
 
     foreachvalue (Framework* framework, frameworks) {
-      // TODO(jay_guo): MULTI_ROLE is handled as a special case because
-      // the `Resource.allocation_info.role` is not yet populated. Once
-      // the support is complete, we do not need the `else` logic here.
-      if (protobuf::frameworkHasCapability(
-              framework->info, FrameworkInfo::Capability::MULTI_ROLE)) {
-        resources += framework->totalUsedResources.filter(allocatedTo(role));
-        resources += framework->totalOfferedResources.filter(allocatedTo(role));
-      } else {
-        resources += framework->totalUsedResources;
-        resources += framework->totalOfferedResources;
-      }
+      resources += framework->totalUsedResources.filter(allocatedTo(role));
+      resources += framework->totalOfferedResources.filter(allocatedTo(role));
     }
 
     return resources;

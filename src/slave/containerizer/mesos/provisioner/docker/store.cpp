@@ -19,16 +19,21 @@
 
 #include <glog/logging.h>
 
+#include <mesos/docker/spec.hpp>
+
+#include <mesos/secret/resolver.hpp>
+
 #include <stout/hashmap.hpp>
+#include <stout/hashset.hpp>
 #include <stout/json.hpp>
 #include <stout/os.hpp>
 
 #include <process/collect.hpp>
 #include <process/defer.hpp>
 #include <process/dispatch.hpp>
+#include <process/executor.hpp>
 #include <process/id.hpp>
-
-#include <mesos/docker/spec.hpp>
+#include <process/metrics/counter.hpp>
 
 #include "slave/containerizer/mesos/provisioner/constants.hpp"
 #include "slave/containerizer/mesos/provisioner/utils.hpp"
@@ -40,13 +45,23 @@
 
 #include "uri/fetcher.hpp"
 
-using namespace process;
-
 namespace spec = docker::spec;
 
 using std::list;
 using std::string;
 using std::vector;
+
+using process::Failure;
+using process::Future;
+using process::Owned;
+using process::Process;
+using process::Promise;
+
+using process::defer;
+using process::dispatch;
+using process::spawn;
+using process::terminate;
+using process::wait;
 
 namespace mesos {
 namespace internal {
@@ -63,7 +78,9 @@ public:
     : ProcessBase(process::ID::generate("docker-provisioner-store")),
       flags(_flags),
       metadataManager(_metadataManager),
-      puller(_puller) {}
+      puller(_puller)
+  {
+  }
 
   ~StoreProcess() {}
 
@@ -73,9 +90,14 @@ public:
       const mesos::Image& image,
       const string& backend);
 
+  Future<Nothing> prune(
+      const std::vector<mesos::Image>& excludeImages,
+      const hashset<string>& activeLayerPaths);
+
 private:
   Future<Image> _get(
       const spec::ImageReference& reference,
+      const Option<Secret>& config,
       const Option<Image>& image,
       const string& backend);
 
@@ -93,15 +115,24 @@ private:
       const string& layerId,
       const string& backend);
 
+  Future<Nothing> _prune(
+      const hashset<string>& activeLayerPaths,
+      const hashset<string>& retainedImageLayers);
+
   const Flags flags;
 
   Owned<MetadataManager> metadataManager;
   Owned<Puller> puller;
   hashmap<string, Owned<Promise<Image>>> pulling;
+
+  // For executing path removals in a separated actor.
+  process::Executor executor;
 };
 
 
-Try<Owned<slave::Store>> Store::create(const Flags& flags)
+Try<Owned<slave::Store>> Store::create(
+    const Flags& flags,
+    SecretResolver* secretResolver)
 {
   // TODO(jieyu): We should inject URI fetcher from top level, instead
   // of creating it here.
@@ -117,7 +148,9 @@ Try<Owned<slave::Store>> Store::create(const Flags& flags)
     return Error("Failed to create the URI fetcher: " + fetcher.error());
   }
 
-  Try<Owned<Puller>> puller = Puller::create(flags, fetcher->share());
+  Try<Owned<Puller>> puller =
+    Puller::create(flags, fetcher->share(), secretResolver);
+
   if (puller.isError()) {
     return Error("Failed to create Docker puller: " + puller.error());
   }
@@ -144,6 +177,12 @@ Try<Owned<slave::Store>> Store::create(
   mkdir = os::mkdir(paths::getStagingDir(flags.docker_store_dir));
   if (mkdir.isError()) {
     return Error("Failed to create Docker store staging directory: " +
+                 mkdir.error());
+  }
+
+  mkdir = os::mkdir(paths::getGcDir(flags.docker_store_dir));
+  if (mkdir.isError()) {
+    return Error("Failed to create Docker store gc directory: " +
                  mkdir.error());
   }
 
@@ -186,6 +225,15 @@ Future<ImageInfo> Store::get(
 }
 
 
+Future<Nothing> Store::prune(
+    const vector<mesos::Image>& excludedImages,
+    const hashset<string>& activeLayerPaths)
+{
+  return dispatch(
+      process.get(), &StoreProcess::prune, excludedImages, activeLayerPaths);
+}
+
+
 Future<Nothing> StoreProcess::recover()
 {
   return metadataManager->recover();
@@ -209,13 +257,21 @@ Future<ImageInfo> StoreProcess::get(
   }
 
   return metadataManager->get(reference.get(), image.cached())
-    .then(defer(self(), &Self::_get, reference.get(), lambda::_1, backend))
+    .then(defer(self(),
+                &Self::_get,
+                reference.get(),
+                image.docker().has_config()
+                  ? image.docker().config()
+                  : Option<Secret>(),
+                lambda::_1,
+                backend))
     .then(defer(self(), &Self::__get, lambda::_1, backend));
 }
 
 
 Future<Image> StoreProcess::_get(
     const spec::ImageReference& reference,
+    const Option<Secret>& config,
     const Option<Image>& image,
     const string& backend)
 {
@@ -249,21 +305,26 @@ Future<Image> StoreProcess::_get(
     }
   }
 
-  Try<string> staging =
-    os::mkdtemp(paths::getStagingTempDir(flags.docker_store_dir));
-
-  if (staging.isError()) {
-    return Failure("Failed to create a staging directory: " + staging.error());
-  }
-
-  // If there is already an pulling going on for the given 'name', we
+  // If there is already a pulling going on for the given 'name', we
   // will skip the additional pulling.
   const string name = stringify(reference);
 
   if (!pulling.contains(name)) {
+    Try<string> staging =
+      os::mkdtemp(paths::getStagingTempDir(flags.docker_store_dir));
+
+    if (staging.isError()) {
+      return Failure(
+          "Failed to create a staging directory: " + staging.error());
+    }
+
     Owned<Promise<Image>> promise(new Promise<Image>());
 
-    Future<Image> future = puller->pull(reference, staging.get(), backend)
+    Future<Image> future = puller->pull(
+        reference,
+        staging.get(),
+        backend,
+        config)
       .then(defer(self(),
                   &Self::moveLayers,
                   staging.get(),
@@ -413,6 +474,124 @@ Future<Nothing> StoreProcess::moveLayer(
           "' to '" + targetRootfs + "': " + rename.error());
     }
   }
+
+  return Nothing();
+}
+
+
+Future<Nothing> StoreProcess::prune(
+    const vector<mesos::Image>& excludedImages,
+    const hashset<string>& activeLayerPaths)
+{
+  // All existing pulling should have finished.
+  if (!pulling.empty()) {
+    return Failure("Cannot prune and pull at the same time");
+  }
+
+  vector<spec::ImageReference> imageReferences;
+  imageReferences.reserve(excludedImages.size());
+
+  foreach (const mesos::Image& image, excludedImages) {
+    Try<spec::ImageReference> reference =
+      spec::parseImageReference(image.docker().name());
+
+    if (reference.isError()) {
+      return Failure(
+          "Failed to parse docker image '" + image.docker().name() +
+          "': " + reference.error());
+    }
+
+    imageReferences.push_back(reference.get());
+  }
+
+  return metadataManager->prune(imageReferences)
+      .then(defer(self(), &Self::_prune, activeLayerPaths, lambda::_1));
+}
+
+
+Future<Nothing> StoreProcess::_prune(
+    const hashset<string>& activeLayerRootfses,
+    const hashset<string>& retainedLayerIds)
+{
+  Try<list<string>> allLayers = paths::listLayers(flags.docker_store_dir);
+  if (allLayers.isError()) {
+    return Failure("Failed to find all layer paths: " + allLayers.error());
+  }
+
+  // Paths in provisioner are layer rootfs. Normalize them to layer
+  // path.
+  hashset<string> activeLayerPaths;
+
+  foreach (const string& rootfsPath, activeLayerRootfses) {
+    activeLayerPaths.insert(Path(rootfsPath).dirname());
+  }
+
+  foreach (const string& layerId, allLayers.get()) {
+    if (retainedLayerIds.contains(layerId)) {
+      VLOG(1) << "Layer '" << layerId << "' is retained by image store cache";
+      continue;
+    }
+
+    const string layerPath =
+      paths::getImageLayerPath(flags.docker_store_dir, layerId);
+
+    if (activeLayerPaths.contains(layerPath)) {
+      VLOG(1) << "Layer '" << layerId << "' is retained by active container";
+      continue;
+    }
+
+    const string target =
+      paths::getGcLayerPath(flags.docker_store_dir, layerId);
+
+    if (os::exists(target)) {
+      return Failure("Marking phase target '" + target + "' already exists");
+    }
+
+    VLOG(1) << "Marking layer '" << layerId << "' to gc by renaming '"
+            << layerPath << "' to '" << target << "'";
+
+    Try<Nothing> rename = os::rename(layerPath, target);
+    if (rename.isError()) {
+      return Failure(
+          "Failed to move layer from '" + layerPath +
+          "' to '" + target + "': " + rename.error());
+    }
+  }
+
+  const string gcDir = paths::getGcDir(flags.docker_store_dir);
+  auto rmdirs = [gcDir]() {
+    Try<list<string>> targets = os::ls(gcDir);
+    if (targets.isError()) {
+      LOG(WARNING) << "Error when listing gcDir '" << gcDir
+                   << "': " << targets.error();
+      return Nothing();
+    }
+
+    foreach (const string& target, targets.get()) {
+      const string path = path::join(gcDir, target);
+      // Run the removal operation with 'continueOnError = false'.
+      // A possible situation is that we incorrectly marked a layer
+      // which is still used by certain layer based backends (aufs, overlay).
+      // In such a case, we proceed with a warning and try to free up as much
+      // disk spaces as possible.
+      LOG(INFO) << "Deleting path '" << path << "'";
+      Try<Nothing> rmdir = os::rmdir(path, true, true, false);
+
+      if (rmdir.isError()) {
+        LOG(WARNING) << "Failed to delete '" << path << "': "
+                     << rmdir.error();
+      } else {
+        LOG(INFO) << "Deleted '" << path << "'";
+      }
+    }
+
+    return Nothing();
+  };
+
+  // NOTE: All `rmdirs` calls are dispatched to one executor so that:
+  //   1. They do not block other dispatches;
+  //   2. They do not occupy all worker threads.
+  executor.execute(rmdirs);
 
   return Nothing();
 }

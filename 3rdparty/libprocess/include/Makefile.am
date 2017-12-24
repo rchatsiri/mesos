@@ -19,6 +19,7 @@ nobase_include_HEADERS =		\
   process/check.hpp			\
   process/clock.hpp			\
   process/collect.hpp			\
+  process/count_down_latch.hpp		\
   process/defer.hpp			\
   process/deferred.hpp			\
   process/delay.hpp			\
@@ -28,8 +29,8 @@ nobase_include_HEADERS =		\
   process/filter.hpp			\
   process/firewall.hpp			\
   process/future.hpp			\
-  process/gc.hpp			\
   process/gmock.hpp			\
+  process/grpc.hpp			\
   process/gtest.hpp			\
   process/help.hpp			\
   process/http.hpp			\
@@ -48,7 +49,6 @@ nobase_include_HEADERS =		\
   process/metrics/metric.hpp		\
   process/metrics/metrics.hpp		\
   process/metrics/timer.hpp		\
-  process/posix/subprocess.hpp		\
   process/network.hpp			\
   process/once.hpp			\
   process/owned.hpp			\
@@ -59,18 +59,18 @@ nobase_include_HEADERS =		\
   process/queue.hpp			\
   process/reap.hpp			\
   process/run.hpp			\
+  process/rwlock.hpp			\
   process/sequence.hpp			\
   process/shared.hpp			\
   process/socket.hpp			\
+  process/state_machine.hpp		\
   process/statistics.hpp		\
   process/system.hpp			\
   process/subprocess.hpp		\
-  process/subprocess_base.hpp		\
   process/ssl/flags.hpp			\
   process/ssl/gtest.hpp			\
   process/ssl/utilities.hpp		\
   process/time.hpp			\
   process/timeout.hpp			\
   process/timer.hpp			\
-  process/timeseries.hpp		\
-  process/windows/subprocess.hpp
+  process/timeseries.hpp

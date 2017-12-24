@@ -19,12 +19,16 @@
 #include <stout/path.hpp>
 #include <stout/protobuf.hpp>
 
+#include "common/protobuf_utils.hpp"
+
 #include "slave/containerizer/mesos/paths.hpp"
 
 #ifndef __WINDOWS__
 namespace unix = process::network::unix;
 #endif // __WINDOWS__
 
+using mesos::slave::ContainerConfig;
+using mesos::slave::ContainerLaunchInfo;
 using mesos::slave::ContainerTermination;
 
 using std::list;
@@ -275,11 +279,59 @@ Result<ContainerTermination> getContainerTermination(
     ::protobuf::read<ContainerTermination>(path);
 
   if (termination.isError()) {
-    return Error("Failed to read termination state of container:"
-                 " " + termination.error());
+    return Error("Failed to read termination state of container: " +
+                 termination.error());
   }
 
   return termination;
+}
+
+
+string getStandaloneContainerMarkerPath(
+    const string& runtimeDir,
+    const ContainerID& containerId)
+{
+  return path::join(
+      getRuntimePath(runtimeDir, containerId),
+      STANDALONE_MARKER_FILE);
+}
+
+
+bool isStandaloneContainer(
+    const string& runtimeDir,
+    const ContainerID& containerId)
+{
+  const string path = getStandaloneContainerMarkerPath(runtimeDir, containerId);
+
+  return os::exists(path);
+}
+
+
+Result<ContainerConfig> getContainerConfig(
+    const string& runtimeDir,
+    const ContainerID& containerId)
+{
+  const string path = path::join(
+      getRuntimePath(runtimeDir, containerId),
+      CONTAINER_CONFIG_FILE);
+
+  if (!os::exists(path)) {
+    // This is possible if we recovered a container launched before we
+    // started to checkpoint `ContainerConfig`.
+    VLOG(1) << "Config path '" << path << "' is missing for container' "
+            << containerId << "'";
+    return None();
+  }
+
+  const Result<ContainerConfig>& containerConfig =
+    ::protobuf::read<ContainerConfig>(path);
+
+  if (containerConfig.isError()) {
+    return Error("Failed to read launch config of container: " +
+                 containerConfig.error());
+  }
+
+  return containerConfig;
 }
 
 
@@ -343,6 +395,43 @@ Try<vector<ContainerID>> getContainerIds(const string& runtimeDir)
 }
 
 
+string getContainerLaunchInfoPath(
+    const string& runtimeDir,
+    const ContainerID& containerId)
+{
+  return path::join(
+      getRuntimePath(runtimeDir, containerId),
+      CONTAINER_LAUNCH_INFO_FILE);
+}
+
+
+Result<ContainerLaunchInfo> getContainerLaunchInfo(
+    const string& runtimeDir,
+    const ContainerID& containerId)
+{
+  const string path = getContainerLaunchInfoPath(
+      runtimeDir, containerId);
+
+  if (!os::exists(path)) {
+    // This is possible because we don't atomically create the
+    // directory and write the 'CONTAINER_LAUNCH_INFO_FILE' file
+    // and thus we might terminate/restart after we've created
+    // the directory but before we've written the file.
+    return None();
+  }
+
+  const Result<ContainerLaunchInfo>& containerLaunchInfo =
+    ::protobuf::read<ContainerLaunchInfo>(path);
+
+  if (containerLaunchInfo.isError()) {
+    return Error(
+        "Failed to read ContainerLaunchInfo: " + containerLaunchInfo.error());
+  }
+
+  return containerLaunchInfo;
+}
+
+
 string getSandboxPath(
     const string& rootSandboxPath,
     const ContainerID& containerId)
@@ -394,6 +483,8 @@ Try<ContainerID> parseSandboxPath(
 
   return currentContainerId;
 }
+
+
 
 } // namespace paths {
 } // namespace containerizer {

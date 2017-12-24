@@ -16,15 +16,22 @@
 
 #include "common/validation.hpp"
 
+#include <limits.h>
+
 #include <algorithm>
 #include <cctype>
 
+#include <mesos/resources.hpp>
+
 #include <stout/foreach.hpp>
+#include <stout/stringify.hpp>
 #include <stout/unreachable.hpp>
 
 #include <stout/os/constants.hpp>
 
 using std::string;
+
+using google::protobuf::RepeatedPtrField;
 
 namespace mesos {
 namespace internal {
@@ -37,13 +44,19 @@ Option<Error> validateID(const string& id)
     return Error("ID must not be empty");
   }
 
+  if (id.length() > NAME_MAX) {
+    return Error(
+        "ID must not be greater than " +
+        stringify(NAME_MAX) + " characters");
+  }
+
   // The ID cannot be exactly these special path components.
   if (id == "." || id == "..") {
     return Error("'" + id + "' is disallowed");
   }
 
   // Rules on invalid characters in the ID:
-  // - Control charaters are obviously not allowed.
+  // - Control characters are obviously not allowed.
   // - Slashes are disallowed as IDs are likely mapped to directories in Mesos.
   auto invalidCharacter = [](char c) {
     return iscntrl(c) ||
@@ -189,6 +202,86 @@ Option<Error> validateEnvironment(const Environment& environment)
 Option<Error> validateCommandInfo(const CommandInfo& command)
 {
   return validateEnvironment(command.environment());
+}
+
+
+Option<Error> validateVolume(const Volume& volume)
+{
+  // TODO(jieyu): Add a validation for path.
+
+  // Only one of the following fields can be set:
+  //   1. host_path
+  //   2. image
+  //   3. source
+  int count = 0;
+  if (volume.has_host_path()) { count++; }
+  if (volume.has_image()) { count++; }
+  if (volume.has_source()) { count++; }
+
+  if (count != 1) {
+    return Error(
+        "Only one of them should be set: "
+        "'host_path', 'image' and 'source'");
+  }
+
+  if (volume.has_source()) {
+    switch (volume.source().type()) {
+      case Volume::Source::DOCKER_VOLUME:
+        if (!volume.source().has_docker_volume()) {
+          return Error(
+              "'source.docker_volume' is not set for DOCKER_VOLUME volume");
+        }
+        break;
+      case Volume::Source::HOST_PATH:
+        if (!volume.source().has_host_path()) {
+          return Error(
+              "'source.host_path' is not set for HOST_PATH volume");
+        }
+        break;
+      case Volume::Source::SANDBOX_PATH:
+        if (!volume.source().has_sandbox_path()) {
+          return Error(
+              "'source.sandbox_path' is not set for SANDBOX_PATH volume");
+        }
+        break;
+      case Volume::Source::SECRET:
+        if (!volume.source().has_secret()) {
+          return Error(
+              "'source.secret' is not set for SECRET volume");
+        }
+        break;
+      default:
+        return Error("'source.type' is unknown");
+    }
+  }
+
+  return None();
+}
+
+
+Option<Error> validateContainerInfo(const ContainerInfo& containerInfo)
+{
+  foreach (const Volume& volume, containerInfo.volumes()) {
+    Option<Error> error = validateVolume(volume);
+    if (error.isSome()) {
+      return Error("Invalid volume: " + error->message);
+    }
+  }
+
+  return None();
+}
+
+
+// Validates that the `gpus` resource is not fractional.
+// We rely on scalar resources only having 3 digits of precision.
+Option<Error> validateGpus(const RepeatedPtrField<Resource>& resources)
+{
+  double gpus = Resources(resources).gpus().getOrElse(0.0);
+  if (static_cast<long long>(gpus * 1000.0) % 1000 != 0) {
+    return Error("The 'gpus' resource must be an unsigned integer");
+  }
+
+  return None();
 }
 
 } // namespace validation {

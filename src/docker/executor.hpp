@@ -45,7 +45,7 @@ struct Flags : public virtual mesos::internal::logging::Flags
 
     add(&Flags::docker_socket,
         "docker_socket",
-        "Resource used by the agent and the executor to provice CLI access\n"
+        "Resource used by the agent and the executor to provide CLI access\n"
         "to the Docker daemon. On Unix, this is typically a path to a\n"
         "socket, such as '/var/run/docker.sock'. On Windows this must be a\n"
         "named pipe, such as '//./pipe/docker_engine'.");
@@ -76,6 +76,10 @@ struct Flags : public virtual mesos::internal::logging::Flags
         "A JSON map of environment variables and values that should\n"
         "be passed into the task launched by this executor.");
 
+    add(&Flags::default_container_dns,
+        "default_container_dns",
+        "JSON-formatted default DNS information for container.");
+
     add(&Flags::cgroups_enable_cfs,
         "cgroups_enable_cfs",
         "Cgroups feature flag to enable hard limits on CPU resources\n"
@@ -90,6 +94,7 @@ struct Flags : public virtual mesos::internal::logging::Flags
   Option<std::string> mapped_directory;
   Option<std::string> launcher_dir;
   Option<std::string> task_environment;
+  Option<std::string> default_container_dns;
 
   bool cgroups_enable_cfs;
 

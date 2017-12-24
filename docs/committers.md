@@ -41,6 +41,13 @@ We'd like to thank the following committers to the Apache Mesos project who have
       <td>kapil@apache.org</td>
     </tr>
     <tr>
+      <td>+1</td>
+      <td>Benjamin Bannier</td>
+      <td>Mesosphere</td>
+      <td></td>
+      <td>bbannier@apache.org</td>
+    </tr>
+    <tr>
       <td>-8</td>
       <td>Adam B</td>
       <td>Mesosphere</td>
@@ -147,6 +154,13 @@ We'd like to thank the following committers to the Apache Mesos project who have
     </tr>
     <tr>
       <td>-8</td>
+      <td>Greg Mann</td>
+      <td>Mesosphere</td>
+      <td>greggomann</td>
+      <td>grag@apache.org</td>
+    </tr>
+    <tr>
+      <td>-8</td>
       <td>Thomas Marshall</td>
       <td>Carnegie Mellon University</td>
       <td></td>
@@ -209,6 +223,13 @@ We'd like to thank the following committers to the Apache Mesos project who have
       <td>alexr@apache.org</td>
     </tr>
     <tr>
+      <td>+1</td>
+      <td>Alexander Rojas</td>
+      <td>Mesosphere</td>
+      <td>alexander</td>
+      <td>arojas@apache.org</td>
+    </tr>
+    <tr>
       <td>-8</td>
       <td>Charles Reiss</td>
       <td>UC Berkeley</td>
@@ -221,6 +242,20 @@ We'd like to thank the following committers to the Apache Mesos project who have
       <td>Mesosphere</td>
       <td>joris</td>
       <td>joris@apache.org</td>
+    </tr>
+    <tr>
+      <td>-8</td>
+      <td>Andrew Schwartzmeyer</td>
+      <td>Microsoft</td>
+      <td>andschwa</td>
+      <td>andschwa@apache.org</td>
+    </tr>
+    <tr>
+      <td>-8</td>
+      <td>Gilbert Song</td>
+      <td>Mesosphere</td>
+      <td></td>
+      <td>gilbert@apache.org</td>
     </tr>
     <tr>
       <td>-5</td>
@@ -274,7 +309,7 @@ We'd like to thank the following committers to the Apache Mesos project who have
     <tr>
       <td>+8</td>
       <td>Qian Zhang</td>
-      <td>IBM</td>
+      <td>Mesosphere</td>
       <td></td>
       <td>qianzhang@apache.org</td>
     </tr>
@@ -303,7 +338,7 @@ responsible for the following:
 * Ensuring that any hacks, known limitations, or future considerations are
   accompanied with TODOs as appropriate.
 
-We’re here to build great software together! Maintainers are a means to ensure that
+We're here to build great software together! Maintainers are a means to ensure that
 we can continue to build great software while scaling the amount of contributors and
 committers in the project. The responsibilities listed above are expected from all
 committers in the project in the work that they do, no matter which component they
@@ -379,7 +414,7 @@ committers to learn about areas of the code that they are unfamiliar with.
     </tr>
     <tr>
       <td>WebUI</td>
-      <td>Haosdent Huang</td>
+      <td>Haosdent Huang, Benjamin Mahler</td>
     </tr>
     <tr>
       <td>Project Website</td>
@@ -395,15 +430,53 @@ committers to learn about areas of the code that they are unfamiliar with.
   <thead>
     <tr>
       <th>Component</th>
+      <th>Subcomponent</th>
       <th>Maintainers (alphabetical)</th>
     </tr>
     <tbody>
       <tr>
         <td>Mesos Containerizer</td>
+        <td></td>
         <td>Ian Downes, Jie Yu</td>
       </tr>
       <tr>
+        <td></td>
+        <td>Image Provisioner</td>
+        <td>Gilbert Song, Jie Yu</td>
+      </tr>
+      <tr>
+        <td></td>
+        <td>IO Switchboard</td>
+        <td>Kevin Klues, Jie Yu</td>
+      </tr>
+      <tr>
+        <td></td>
+        <td>Launcher</td>
+        <td>Benjamin Hindman, Jie Yu</td>
+      </tr>
+      <tr>
+        <td></td>
+        <td>Cgroups Isolator</td>
+        <td>Haosdent, Gilbert Song, Jie Yu</td>
+      </tr>
+      <tr>
+        <td></td>
+        <td>CNI Isolator</td>
+        <td>Avinash Sridharan (cc), Jie Yu, Qian Zhang</td>
+      </tr>
+      <tr>
+        <td></td>
+        <td>Nvidia GPU Isolator</td>
+        <td>Kevin Klues</td>
+      </tr>
+      <tr>
+        <td></td>
+        <td>XFS Isolator</td>
+        <td>Yan Xu, James Peach</td>
+      </tr>
+      <tr>
         <td>Docker Containerizer</td>
+        <td></td>
         <td>Tim Chen, Benjamin Hindman</td>
       </tr>
     </tbody>

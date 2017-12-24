@@ -17,8 +17,6 @@
 #include <string>
 #include <vector>
 
-#include <glog/logging.h>
-
 #include <mesos/resources.hpp>
 #include <mesos/scheduler.hpp>
 #include <mesos/type_utils.hpp>
@@ -34,13 +32,21 @@
 #include <stout/stringify.hpp>
 #include <stout/try.hpp>
 
+#include "logging/logging.hpp"
+
 using namespace mesos;
 
+using std::cerr;
+using std::cout;
+using std::endl;
 using std::string;
 using std::vector;
 
 const int32_t CPUS_PER_TASK = 1;
 const int32_t MEM_PER_TASK = 128;
+
+constexpr char FRAMEWORK_NAME[] = "Dynamic Reservation Framework (C++)";
+
 
 // The framework reserves resources to run at most one task at a time
 // on each agent; the resources are reserved when they are offered to
@@ -60,18 +66,18 @@ public:
       totalTasks(5),
       principal(_principal)
   {
-    reservationInfo.set_principal(principal);
-
     taskResources = Resources::parse(
         "cpus:" + stringify(CPUS_PER_TASK) +
         ";mem:" + stringify(MEM_PER_TASK)).get();
 
     taskResources.allocate(role);
 
+    reservationInfo.set_type(Resource::ReservationInfo::DYNAMIC);
+    reservationInfo.set_role(role);
+    reservationInfo.set_principal(principal);
+
     // The task will run on reserved resources.
-    Try<Resources> flattened = taskResources.flatten(role, reservationInfo);
-    CHECK_SOME(flattened);
-    taskResources = flattened.get();
+    taskResources = taskResources.pushReservation(reservationInfo);
   }
 
   virtual ~DynamicReservationScheduler() {}
@@ -303,7 +309,7 @@ private:
   Resource::ReservationInfo reservationInfo;
   Resources taskResources;
 
-  Offer::Operation RESERVE(Resources resources)
+  Offer::Operation RESERVE(const Resources& resources)
   {
     Offer::Operation operation;
     operation.set_type(Offer::Operation::RESERVE);
@@ -311,7 +317,7 @@ private:
     return operation;
   }
 
-  Offer::Operation UNRESERVE(Resources resources)
+  Offer::Operation UNRESERVE(const Resources& resources)
   {
     Offer::Operation operation;
     operation.set_type(Offer::Operation::UNRESERVE);
@@ -358,18 +364,32 @@ public:
 int main(int argc, char** argv)
 {
   Flags flags;
-
   Try<flags::Warnings> load = flags.load(None(), argc, argv);
-  if (load.isError()) {
-    EXIT(EXIT_FAILURE) << flags.usage(load.error());
-  } else if (flags.master.isNone()) {
-    EXIT(EXIT_FAILURE) << flags.usage("Missing --master");
-  } else if (flags.role.isNone()) {
-    EXIT(EXIT_FAILURE) << flags.usage("Missing --role");
-  } else if (flags.role.get() == "*") {
-    EXIT(EXIT_FAILURE)
-      << flags.usage("Role is incorrect; the default '*' role cannot be used");
+
+  if (flags.help) {
+    cout << flags.usage() << endl;
+    return EXIT_SUCCESS;
   }
+
+  if (load.isError()) {
+    cerr << flags.usage(load.error()) << endl;
+    return EXIT_FAILURE;
+  }
+
+  if (flags.master.isNone()) {
+    cerr << flags.usage("Missing --master") << endl;
+    return EXIT_FAILURE;
+  } else if (flags.role.isNone()) {
+    cerr << flags.usage("Missing --role") << endl;
+    return EXIT_FAILURE;
+  } else if (flags.role.get() == "*") {
+    cerr << flags.usage(
+                "Role is incorrect; the default '*' role cannot be used")
+         << endl;
+    return EXIT_FAILURE;
+  }
+
+  internal::logging::initialize(argv[0], false);
 
   // Log any flag warnings.
   foreach (const flags::Warning& warning, load->warnings) {
@@ -378,9 +398,13 @@ int main(int argc, char** argv)
 
   FrameworkInfo framework;
   framework.set_user(""); // Mesos'll fill in the current user.
-  framework.set_name("Dynamic Reservation Framework (C++)");
-  framework.set_role(flags.role.get());
+  framework.set_name(FRAMEWORK_NAME);
+  framework.add_roles(flags.role.get());
+  framework.add_capabilities()->set_type(
+      FrameworkInfo::Capability::MULTI_ROLE);
   framework.set_principal(flags.principal);
+  framework.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   DynamicReservationScheduler scheduler(
       flags.command,

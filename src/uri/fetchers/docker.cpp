@@ -32,6 +32,7 @@
 #include <stout/strings.hpp>
 
 #include <stout/os/constants.hpp>
+#include <stout/os/getenv.hpp>
 #include <stout/os/mkdir.hpp>
 #include <stout/os/write.hpp>
 
@@ -131,7 +132,7 @@ static Future<http::Response> curl(
         Future<Option<int>>,
         Future<string>,
         Future<string>>& t) -> Future<http::Response> {
-      Future<Option<int>> status = std::get<0>(t);
+      const Future<Option<int>>& status = std::get<0>(t);
       if (!status.isReady()) {
         return Failure(
             "Failed to get the exit status of the curl subprocess: " +
@@ -143,7 +144,7 @@ static Future<http::Response> curl(
       }
 
       if (status->get() != 0) {
-        Future<string> error = std::get<2>(t);
+        const Future<string>& error = std::get<2>(t);
         if (!error.isReady()) {
           return Failure(
               "Failed to perform 'curl'. Reading stderr failed: " +
@@ -153,7 +154,7 @@ static Future<http::Response> curl(
         return Failure("Failed to perform 'curl': " + error.get());
       }
 
-      Future<string> output = std::get<1>(t);
+      const Future<string>& output = std::get<1>(t);
       if (!output.isReady()) {
         return Failure(
             "Failed to read stdout from 'curl': " +
@@ -206,19 +207,16 @@ static Future<http::Response> curl(
 
 // TODO(jieyu): Add a comment here.
 static Future<int> download(
-    const URI& uri,
-    const string& directory,
+    const string& uri,
+    const string& blobPath,
     const http::Headers& headers = http::Headers())
 {
-  const string output = path::join(directory, Path(uri.path()).basename());
-
   vector<string> argv = {
     "curl",
     "-s",                 // Don't show progress meter or error messages.
     "-S",                 // Make curl show an error message if it fails.
-    "-L",                 // Follow HTTP 3xx redirects.
-    "-w", "%{http_code}", // Display HTTP response code on stdout.
-    "-o", output          // Write output to the file.
+    "-w", "%{http_code}\n%{redirect_url}", // Display HTTP response code and the redirected URL. // NOLINT(whitespace/line_length)
+    "-o", blobPath        // Write output to the file.
   };
 
   // Add additional headers.
@@ -227,7 +225,7 @@ static Future<int> download(
     argv.push_back(key + ": " + value);
   }
 
-  argv.push_back(strings::trim(stringify(uri)));
+  argv.push_back(uri);
 
   // TODO(jieyu): Kill the process if discard is called.
   Try<Subprocess> s = subprocess(
@@ -245,11 +243,11 @@ static Future<int> download(
       s.get().status(),
       io::read(s.get().out().get()),
       io::read(s.get().err().get()))
-    .then([](const tuple<
+    .then([=](const tuple<
         Future<Option<int>>,
         Future<string>,
         Future<string>>& t) -> Future<int> {
-      Future<Option<int>> status = std::get<0>(t);
+      const Future<Option<int>>& status = std::get<0>(t);
       if (!status.isReady()) {
         return Failure(
             "Failed to get the exit status of the curl subprocess: " +
@@ -261,7 +259,7 @@ static Future<int> download(
       }
 
       if (status->get() != 0) {
-        Future<string> error = std::get<2>(t);
+        const Future<string>& error = std::get<2>(t);
         if (!error.isReady()) {
           return Failure(
               "Failed to perform 'curl'. Reading stderr failed: " +
@@ -271,21 +269,102 @@ static Future<int> download(
         return Failure("Failed to perform 'curl': " + error.get());
       }
 
-      Future<string> output = std::get<1>(t);
+      const Future<string>& output = std::get<1>(t);
       if (!output.isReady()) {
         return Failure(
             "Failed to read stdout from 'curl': " +
             (output.isFailed() ? output.failure() : "discarded"));
       }
 
+      vector<string> tokens = strings::tokenize(output.get(), "\n", 2);
+      if (tokens.empty()) {
+        return Failure("Unexpected 'curl' output: " + output.get());
+      }
+
       // Parse the output and get the HTTP response code.
-      Try<int> code = numify<int>(output.get());
+      Try<int> code = numify<int>(tokens[0]);
       if (code.isError()) {
-        return Failure("Unexpected output from 'curl': " + output.get());
+        return Failure(
+            "Unexpected HTTP response code from 'curl': " + tokens[0]);
+      }
+
+      // If there are two tokens, it means that the redirect url
+      // exists in the stdout and the request to download the blob
+      // is already authenticated.
+      if (tokens.size() == 2) {
+        // Headers are not attached because the request is already
+        // authenticated.
+        return download(tokens[1], blobPath);
       }
 
       return code.get();
     });
+}
+
+
+static Future<int> download(
+    const URI& uri,
+    const string& directory,
+    const http::Headers& headers = http::Headers())
+{
+  const string blobPath = path::join(directory, Path(uri.path()).basename());
+  return download(strings::trim(stringify(uri)), blobPath, headers);
+}
+
+
+// Returns the 'Basic' credential as a header for pulling an image
+// from a registry, if the host of the image's repository exists in
+// the docker config file, or empty if there is none.
+static http::Headers getAuthHeaderBasic(
+    const URI& uri,
+    const hashmap<string, spec::Config::Auth>& auths)
+{
+  http::Headers headers;
+
+  // NOTE: The host field of uri can be either domain or IP
+  // address, which is merged in docker registry puller.
+  const string registry = uri.has_port()
+    ? uri.host() + ":" + stringify(uri.port())
+    : uri.host();
+
+  foreachpair (const string& key, const spec::Config::Auth& value, auths) {
+    // Handle domains including 'docker.io' as a special case,
+    // because the url is set differently for different version
+    // of docker default registry, but all of them should depend
+    // on the same default namespace 'docker.io'. Please see:
+    // https://github.com/docker/docker/blob/master/registry/config.go#L34
+    const bool isDocker =
+      strings::contains(uri.host(), "docker.io") &&
+      strings::contains(key, "docker.io");
+
+    // Should not use 'http::URL::parse()' here, since many
+    // registry domain recorded in docker config file does
+    // not start with 'https://' or 'http://'. They are pure
+    // domain only (e.g., 'quay.io', 'localhost:5000').
+    // Please see 'ResolveAuthConfig()' in:
+    // https://github.com/docker/docker/blob/master/registry/auth.go
+    if (isDocker || (registry == spec::parseAuthUrl(key))) {
+      if (value.has_auth()) {
+        headers["Authorization"] = "Basic " + value.auth();
+        break;
+      }
+    }
+  }
+
+  return headers;
+}
+
+
+static http::Headers getAuthHeaderBearer(
+    const Option<string>& authToken)
+{
+  http::Headers headers;
+
+  if (authToken.isSome()) {
+    headers["Authorization"] = "Bearer " + authToken.get();
+  }
+
+  return headers;
 }
 
 //-------------------------------------------------------------------
@@ -300,13 +379,18 @@ public:
     : ProcessBase(process::ID::generate("docker-fetcher-plugin")),
       auths(_auths) {}
 
-  Future<Nothing> fetch(const URI& uri, const string& directory);
+  Future<Nothing> fetch(
+      const URI& uri,
+      const string& directory,
+      const Option<string>& data);
 
 private:
   Future<Nothing> _fetch(
       const URI& uri,
       const string& directory,
       const URI& manifestUri,
+      const http::Headers& manifestHeaders,
+      const http::Headers& basicAuthHeaders,
       const http::Response& response);
 
   Future<Nothing> __fetch(
@@ -323,10 +407,16 @@ private:
   Future<Nothing> _fetchBlob(
       const URI& uri,
       const string& directory,
-      const URI& blobUri);
+      const URI& blobUri,
+      const http::Headers& basicAuthHeaders);
 
+  Future<Nothing> __fetchBlob(int code);
+
+  // Returns a token-based authorization header. Basic authorization
+  // header may be required to get a proper authorization token.
   Future<http::Headers> getAuthHeader(
       const URI& uri,
+      const http::Headers& basicAuthHeaders,
       const http::Response& response);
 
   URI getManifestUri(const URI& uri);
@@ -403,19 +493,22 @@ string DockerFetcherPlugin::name() const
 
 Future<Nothing> DockerFetcherPlugin::fetch(
     const URI& uri,
-    const string& directory) const
+    const string& directory,
+    const Option<string>& data) const
 {
   return dispatch(
       process.get(),
       &DockerFetcherPluginProcess::fetch,
       uri,
-      directory);
+      directory,
+      data);
 }
 
 
 Future<Nothing> DockerFetcherPluginProcess::fetch(
     const URI& uri,
-    const string& directory)
+    const string& directory,
+    const Option<string>& data)
 {
   // TODO(gilbert): Convert the `uri` to ::docker::spec::ImageReference
   // and pass it all the way down to avoid the complicated URI conversion
@@ -441,18 +534,49 @@ Future<Nothing> DockerFetcherPluginProcess::fetch(
         directory + "': " + mkdir.error());
   }
 
+  hashmap<string, spec::Config::Auth> _auths;
+
+  // 'data' is expected as a docker config in JSON format.
+  if (data.isSome()) {
+    Try<hashmap<string, spec::Config::Auth>> secretAuths =
+      spec::parseAuthConfig(data.get());
+
+    if (secretAuths.isError()) {
+      return Failure("Failed to parse docker config: " + secretAuths.error());
+    }
+
+    _auths = secretAuths.get();
+  }
+
+  // The 'secretAuths' takes the precedence over the default auths.
+  _auths.insert(auths.begin(), auths.end());
+
+  // Use the 'Basic' credential to pull the manifest/blob by default.
+  http::Headers basicAuthHeaders = getAuthHeaderBasic(uri, _auths);
+
   if (uri.scheme() == "docker-blob") {
-    return fetchBlob(uri, directory, http::Headers());
+    return fetchBlob(uri, directory, basicAuthHeaders);
   }
 
   URI manifestUri = getManifestUri(uri);
 
-  return curl(manifestUri)
+  // Request a Version 2 Schema 1 manifest. The MIME type of a Schema 1
+  // manifest is described in the following link:
+  // https://docs.docker.com/registry/spec/manifest-v2-1/
+  // Note: The 'Accept' header is required for Amazon ECR. See:
+  // https://forums.aws.amazon.com/message.jspa?messageID=780440
+  http::Headers manifestHeaders = {
+    {"Accept", "application/vnd.docker.distribution.manifest.v1+json"}
+  };
+
+  return curl(manifestUri, manifestHeaders + basicAuthHeaders)
     .then(defer(self(),
                 &Self::_fetch,
                 uri,
                 directory,
                 manifestUri,
+                manifestHeaders,
+                basicAuthHeaders,
                 lambda::_1));
 }
 
@@ -461,13 +585,16 @@ Future<Nothing> DockerFetcherPluginProcess::_fetch(
     const URI& uri,
     const string& directory,
     const URI& manifestUri,
+    const http::Headers& manifestHeaders,
+    const http::Headers& basicAuthHeaders,
     const http::Response& response)
 {
   if (response.code == http::Status::UNAUTHORIZED) {
-    return getAuthHeader(manifestUri, response)
+    // Use the 'Basic' credential to request an auth token by default.
+    return getAuthHeader(manifestUri, basicAuthHeaders, response)
       .then(defer(self(), [=](
           const http::Headers& authHeaders) -> Future<Nothing> {
-        return curl(manifestUri, authHeaders)
+        return curl(manifestUri, manifestHeaders + authHeaders)
           .then(defer(self(),
                       &Self::__fetch,
                       uri,
@@ -477,7 +604,7 @@ Future<Nothing> DockerFetcherPluginProcess::_fetch(
       }));
   }
 
-  return __fetch(uri, directory, http::Headers(), response);
+  return __fetch(uri, directory, basicAuthHeaders, response);
 }
 
 
@@ -500,12 +627,25 @@ Future<Nothing> DockerFetcherPluginProcess::__fetch(
   // digests for pulling images that were pushed with Docker 1.10+ to
   // Registry 2.3+.
   Option<string> contentType = response.headers.get("Content-Type");
-  if (contentType.isSome() &&
-      !strings::startsWith(
+  if (contentType.isSome()) {
+    // NOTE: Docker support the following three media type for V2
+    // schema 1 manifest:
+    // 1. application/vnd.docker.distribution.manifest.v1+json
+    // 2. application/vnd.docker.distribution.manifest.v1+prettyjws
+    // 3. application/json
+    // For more details, see:
+    // https://docs.docker.com/registry/spec/manifest-v2-1/
+    bool isV2Schema1 =
+      strings::startsWith(
           contentType.get(),
-          "application/vnd.docker.distribution.manifest.v1")) {
-    return Failure(
-        "Unsupported manifest MIME type: " + contentType.get());
+          "application/vnd.docker.distribution.manifest.v1") ||
+      strings::startsWith(
+          contentType.get(),
+          "application/json");
+
+    if (!isV2Schema1) {
+      return Failure("Unsupported manifest MIME type: " + contentType.get());
+    }
   }
 
   Try<spec::v2::ImageManifest> manifest = spec::v2::parse(response.body);
@@ -543,6 +683,7 @@ Future<Nothing> DockerFetcherPluginProcess::__fetch(
           ? Option<int>(uri.port())
           : None()));
 
+    // Use the same 'authHeaders' as for the manifest to pull the blobs.
     futures.push_back(fetchBlob(
         blob,
         directory,
@@ -563,20 +704,15 @@ Future<Nothing> DockerFetcherPluginProcess::fetchBlob(
 
   return download(blobUri, directory, authHeaders)
     .then(defer(self(), [=](int code) -> Future<Nothing> {
-      if (code == http::Status::OK) {
-        return Nothing();
+      if (code == http::Status::UNAUTHORIZED) {
+        // If we get a '401 Unauthorized', we assume that 'authHeaders'
+        // is either empty or contains the 'Basic' credential, and we
+        // can use it to request an auth token.
+        // TODO(chhsiao): What if 'authHeaders' has an expired token?
+        return _fetchBlob(uri, directory, blobUri, authHeaders);
       }
 
-      // Note that if 'authHeaders' is not empty, but we still get a
-      // '401 Unauthorized' response, we return a Failure. This can
-      // prevent us from entering an infinite loop.
-      if (code == http::Status::UNAUTHORIZED && authHeaders.empty()) {
-        return _fetchBlob(uri, directory, blobUri);
-      }
-
-      return Failure(
-          "Unexpected HTTP response '" + http::Status::string(code) + "' "
-          "when trying to download the blob");
+      return __fetchBlob(code);
     }));
 }
 
@@ -584,13 +720,14 @@ Future<Nothing> DockerFetcherPluginProcess::fetchBlob(
 Future<Nothing> DockerFetcherPluginProcess::_fetchBlob(
     const URI& uri,
     const string& directory,
-    const URI& blobUri)
+    const URI& blobUri,
+    const http::Headers& basicAuthHeaders)
 {
   // TODO(jieyu): This extra 'curl' call can be avoided if we can get
   // HTTP headers from 'download'. Currently, 'download' only returns
   // the HTTP response code because we don't support parsing HTTP
   // headers alone. Revisit this once that's supported.
-  return curl(blobUri)
+  return curl(blobUri, basicAuthHeaders)
     .then(defer(self(), [=](const http::Response& response) -> Future<Nothing> {
       // We expect a '401 Unauthorized' response here since the
       // 'download' with the same URI returns a '401 Unauthorized'.
@@ -600,47 +737,33 @@ Future<Nothing> DockerFetcherPluginProcess::_fetchBlob(
           "but get '" + response.status + "' instead");
       }
 
-      return getAuthHeader(blobUri, response)
-        .then(defer(self(),
-                    &Self::fetchBlob,
-                    uri,
-                    directory,
-                    lambda::_1));
+      return getAuthHeader(blobUri, basicAuthHeaders, response)
+        .then(defer(self(), [=](
+            const http::Headers& authHeaders) -> Future<Nothing> {
+          return download(blobUri, directory, authHeaders)
+            .then(defer(self(),
+                        &Self::__fetchBlob,
+                        lambda::_1));
+        }));
     }));
 }
 
 
-static http::Headers getAuthHeaderBasic(
-    const Option<string>& credential)
+Future<Nothing> DockerFetcherPluginProcess::__fetchBlob(int code)
 {
-  http::Headers headers;
-
-  if (credential.isSome()) {
-    // NOTE: The 'Basic' credential would be attached as a header
-    // when pulling a public image from a registry, if the host
-    // of the image's repository exists in the docker config file.
-    headers["Authorization"] = "Basic " + credential.get();
+  if (code == http::Status::OK) {
+    return Nothing();
   }
 
-  return headers;
-}
-
-
-static http::Headers getAuthHeaderBearer(
-    const Option<string>& authToken)
-{
-  http::Headers headers;
-
-  if (authToken.isSome()) {
-    headers["Authorization"] = "Bearer " + authToken.get();
-  }
-
-  return headers;
+  return Failure(
+      "Unexpected HTTP response '" + http::Status::string(code) + "' "
+      "when trying to download the blob");
 }
 
 
 Future<http::Headers> DockerFetcherPluginProcess::getAuthHeader(
     const URI& uri,
+    const http::Headers& basicAuthHeaders,
     const http::Response& response)
 {
   Result<http::header::WWWAuthenticate> header =
@@ -655,24 +778,6 @@ Future<http::Headers> DockerFetcherPluginProcess::getAuthHeader(
 
   // According to RFC, auth scheme should be case insensitive.
   const string authScheme = strings::upper(header->authScheme());
-
-  // If a '401 Unauthorized' response is received and the auth-scheme
-  // is 'Basic', we do basic authentication with the server directly.
-  if (authScheme == "BASIC") {
-    const string registry = uri.has_port()
-      ? uri.host() + ":" + stringify(uri.port())
-      : uri.host();
-
-    Option<string> auth;
-    foreachpair (const string& key, const spec::Config::Auth& value, auths) {
-      if (registry == spec::parseAuthUrl(key) && value.has_auth()) {
-        auth = value.auth();
-        break;
-      }
-    }
-
-    return getAuthHeaderBasic(auth);
-  }
 
   // If a '401 Unauthorized' response is received and the auth-scheme
   // is 'Bearer', we expect a header 'Www-Authenticate' containing the
@@ -700,58 +805,6 @@ Future<http::Headers> DockerFetcherPluginProcess::getAuthHeader(
       return Failure("Missing 'scope' in WWW-Authenticate header");
     }
 
-    // NOTE: The host field of uri can be either domain or IP
-    // address, which is merged in docker registry puller.
-    const string registry = uri.has_port()
-      ? uri.host() + ":" + stringify(uri.port())
-      : uri.host();
-
-    // TODO(gilbert): Ideally, this should be done after getting
-    // the '401 Unauthorized' response. Then, the workflow should
-    // be:
-    // 1. Send a requst to registry for pulling.
-    // 2. The registry returns '401 Unauthorized' HTTP response.
-    // 3. The registry client makes a request (without a Basic header)
-    //    to the authorization server for a Bearer token.
-    // 4. The authorization servicer returns an unacceptable
-    //    Bearer token.
-    // 5. Re-send a request to registry with the Bearer token attached.
-    // 6. The registry returns '401 Unauthorized' HTTP response.
-    // 7. The registry client makes a request (with a correct Basic
-    //    header attached) to the authorization server for a Bearer
-    //    token.
-    // 8. The authorization servicer returns a corrent Bearer token.
-    // 9. Re-send a request to registry with the right Bearer token
-    //    attached.
-    // 10. The registry authorizes the client, and the docker fetcher
-    //     starts pulling.
-    // The step 3 ~ 6 are exactly what this TODO describes.
-    Option<string> auth;
-
-    foreachpair (const string& key, const spec::Config::Auth& value, auths) {
-      // Handle domains including 'docker.io' as a special case,
-      // because the url is set differently for different version
-      // of docker default registry, but all of them should depend
-      // on the same default namespace 'docker.io'. Please see:
-      // https://github.com/docker/docker/blob/master/registry/config.go#L34
-      const bool isDocker =
-        strings::contains(uri.host(), "docker.io") &&
-        strings::contains(key, "docker.io");
-
-      // Should not use 'http::URL::parse()' here, since many
-      // registry domain recorded in docker config file does
-      // not start with 'https://' or 'http://'. They are pure
-      // domain only (e.g., 'quay.io', 'localhost:5000').
-      // Please see 'ResolveAuthConfig()' in:
-      // https://github.com/docker/docker/blob/master/registry/auth.go
-      if (isDocker || (registry == spec::parseAuthUrl(key))) {
-        if (value.has_auth()) {
-          auth = value.auth();
-          break;
-        }
-      }
-    }
-
     // TODO(jieyu): Currently, we don't expect the auth server to return
     // a service or a scope that needs encoding.
     string authServerUri =
@@ -759,7 +812,7 @@ Future<http::Headers> DockerFetcherPluginProcess::getAuthHeader(
       "service=" + authParam.at("service") + "&" +
       "scope=" + authParam.at("scope");
 
-    return curl(authServerUri, getAuthHeaderBasic(auth))
+    return curl(authServerUri, basicAuthHeaders)
       .then([authServerUri](
           const http::Response& response) -> Future<http::Headers> {
         if (response.code != http::Status::OK) {

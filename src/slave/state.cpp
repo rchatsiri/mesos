@@ -42,6 +42,10 @@
 #include <stout/os/realpath.hpp>
 #include <stout/os/stat.hpp>
 
+#include <stout/os/realpath.hpp>
+
+#include "common/resources_utils.hpp"
+
 #include "messages/messages.hpp"
 
 #include "slave/paths.hpp"
@@ -80,7 +84,6 @@ Try<State> recover(const string& rootDir, bool strict)
   // resources checkpoint file.
   state.resources = resources.get();
 
-  // If the machine has rebooted, skip recovering slave state.
   const string& bootIdPath = paths::getBootIdPath(rootDir);
   if (os::exists(bootIdPath)) {
     Try<string> read = os::read(bootIdPath);
@@ -93,7 +96,7 @@ Try<State> recover(const string& rootDir, bool strict)
 
       if (id.get() != strings::trim(read.get())) {
         LOG(INFO) << "Agent host rebooted";
-        return state;
+        state.rebooted = true;
       }
     }
   }
@@ -148,7 +151,7 @@ Try<SlaveState> SlaveState::recover(
     return state;
   }
 
-  const Result<SlaveInfo>& slaveInfo = ::protobuf::read<SlaveInfo>(path);
+  Result<SlaveInfo> slaveInfo = ::protobuf::read<SlaveInfo>(path);
 
   if (slaveInfo.isError()) {
     const string& message = "Failed to read agent info from '" + path + "': " +
@@ -168,6 +171,10 @@ Try<SlaveState> SlaveState::recover(
     LOG(WARNING) << "Found empty agent info file '" << path << "'";
     return state;
   }
+
+  convertResourceFormat(
+      slaveInfo.get().mutable_resources(),
+      POST_RESERVATION_REFINEMENT);
 
   state.info = slaveInfo.get();
 
@@ -193,7 +200,7 @@ Try<SlaveState> SlaveState::recover(
     }
 
     state.frameworks[frameworkId] = framework.get();
-    state.errors += framework.get().errors;
+    state.errors += framework->errors;
   }
 
   return state;
@@ -269,7 +276,7 @@ Try<FrameworkState> FrameworkState::recover(
     }
   }
 
-  if (pid.get().empty()) {
+  if (pid->empty()) {
     // This could happen if the slave died after opening the file for
     // writing but before it checkpointed anything.
     LOG(WARNING) << "Found empty framework pid file '" << path << "'";
@@ -302,7 +309,7 @@ Try<FrameworkState> FrameworkState::recover(
     }
 
     state.executors[executorId] = executor.get();
-    state.errors += executor.get().errors;
+    state.errors += executor->errors;
   }
 
   return state;
@@ -364,7 +371,7 @@ Try<ExecutorState> ExecutorState::recover(
       }
 
       state.runs[containerId] = run.get();
-      state.errors += run.get().errors;
+      state.errors += run->errors;
     }
   }
 
@@ -387,8 +394,7 @@ Try<ExecutorState> ExecutorState::recover(
     return state;
   }
 
-  const Result<ExecutorInfo>& executorInfo =
-    ::protobuf::read<ExecutorInfo>(path);
+  Result<ExecutorInfo> executorInfo = ::protobuf::read<ExecutorInfo>(path);
 
   if (executorInfo.isError()) {
     message = "Failed to read executor info from '" + path + "': " +
@@ -409,6 +415,10 @@ Try<ExecutorState> ExecutorState::recover(
     LOG(WARNING) << "Found empty executor info file '" << path << "'";
     return state;
   }
+
+  convertResourceFormat(
+      executorInfo.get().mutable_resources(),
+      POST_RESERVATION_REFINEMENT);
 
   state.info = executorInfo.get();
 
@@ -465,7 +475,7 @@ Try<RunState> RunState::recover(
     }
 
     state.tasks[taskId] = task.get();
-    state.errors += task.get().errors;
+    state.errors += task->errors;
   }
 
   // Read the forked pid.
@@ -493,7 +503,7 @@ Try<RunState> RunState::recover(
     }
   }
 
-  if (pid.get().empty()) {
+  if (pid->empty()) {
     // This could happen if the slave died after opening the file for
     // writing but before it checkpointed anything.
     LOG(WARNING) << "Found empty executor forked pid file '" << path << "'";
@@ -502,8 +512,9 @@ Try<RunState> RunState::recover(
 
   Try<pid_t> forkedPid = numify<pid_t>(pid.get());
   if (forkedPid.isError()) {
-    return Error("Failed to parse forked pid " + pid.get() +
-                 ": " + forkedPid.error());
+    return Error("Failed to parse forked pid '" + pid.get() + "' "
+                 "from pid file '" + path + "': " +
+                 forkedPid.error());
   }
 
   state.forkedPid = forkedPid.get();
@@ -528,7 +539,7 @@ Try<RunState> RunState::recover(
       }
     }
 
-    if (pid.get().empty()) {
+    if (pid->empty()) {
       // This could happen if the slave died after opening the file for
       // writing but before it checkpointed anything.
       LOG(WARNING) << "Found empty executor libprocess pid file '" << path
@@ -545,15 +556,18 @@ Try<RunState> RunState::recover(
   path = paths::getExecutorHttpMarkerPath(
       rootDir, slaveId, frameworkId, executorId, containerId);
 
+  // The marker could be absent if the slave died before the executor
+  // registered with the slave.
   if (!os::exists(path)) {
-    // This could happen if the slave died before the executor
-    // registered with the slave.
-    LOG(WARNING) << "Failed to find executor libprocess pid/http marker file";
+    LOG(WARNING) << "Failed to find '" << paths::LIBPROCESS_PID_FILE
+                 << "' or '" << paths::HTTP_MARKER_FILE
+                 << "' for container " << containerId
+                 << " of executor '" << executorId
+                 << "' of framework " << frameworkId;
     return state;
   }
 
   state.http = true;
-
   return state;
 }
 
@@ -581,7 +595,7 @@ Try<TaskState> TaskState::recover(
     return state;
   }
 
-  const Result<Task>& task = ::protobuf::read<Task>(path);
+  Result<Task> task = ::protobuf::read<Task>(path);
 
   if (task.isError()) {
     message = "Failed to read task info from '" + path + "': " + task.error();
@@ -601,6 +615,10 @@ Try<TaskState> TaskState::recover(
     LOG(WARNING) << "Found empty task info file '" << path << "'";
     return state;
   }
+
+  convertResourceFormat(
+      task.get().mutable_resources(),
+      POST_RESERVATION_REFINEMENT);
 
   state.info = task.get();
 
@@ -641,10 +659,10 @@ Try<TaskState> TaskState::recover(
       break;
     }
 
-    if (record.get().type() == StatusUpdateRecord::UPDATE) {
-      state.updates.push_back(record.get().update());
+    if (record->type() == StatusUpdateRecord::UPDATE) {
+      state.updates.push_back(record->update());
     } else {
-      state.acks.insert(UUID::fromBytes(record.get().uuid()).get());
+      state.acks.insert(id::UUID::fromBytes(record->uuid()).get());
     }
   }
 
@@ -765,6 +783,8 @@ Try<Resources> ResourcesState::recoverResources(
     if (!resource.isSome()) {
       break;
     }
+
+    convertResourceFormat(&resource.get(), POST_RESERVATION_REFINEMENT);
 
     resources += resource.get();
   }

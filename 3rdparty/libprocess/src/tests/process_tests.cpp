@@ -27,18 +27,17 @@
 #include <atomic>
 #include <sstream>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include <process/async.hpp>
 #include <process/clock.hpp>
+#include <process/count_down_latch.hpp>
 #include <process/defer.hpp>
 #include <process/delay.hpp>
 #include <process/dispatch.hpp>
 #include <process/executor.hpp>
 #include <process/filter.hpp>
 #include <process/future.hpp>
-#include <process/gc.hpp>
 #include <process/gmock.hpp>
 #include <process/gtest.hpp>
 #include <process/network.hpp>
@@ -68,9 +67,11 @@
 
 namespace http = process::http;
 namespace inject = process::inject;
+namespace inet4 = process::network::inet4;
 
 using process::async;
 using process::Clock;
+using process::CountDownLatch;
 using process::defer;
 using process::Deferred;
 using process::Event;
@@ -103,6 +104,7 @@ using std::vector;
 using testing::_;
 using testing::Assign;
 using testing::DoAll;
+using testing::InvokeWithoutArgs;
 using testing::Return;
 using testing::ReturnArg;
 
@@ -110,7 +112,7 @@ using testing::ReturnArg;
 
 TEST(ProcessTest, Event)
 {
-  Owned<Event> event(new TerminateEvent(UPID()));
+  Owned<Event> event(new TerminateEvent(UPID(), false));
   EXPECT_FALSE(event->is<MessageEvent>());
   EXPECT_FALSE(event->is<ExitedEvent>());
   EXPECT_TRUE(event->is<TerminateEvent>());
@@ -125,11 +127,8 @@ public:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Spawn)
+TEST(ProcessTest, THREADSAFE_Spawn)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   SpawnProcess process;
 
   EXPECT_CALL(process, initialize());
@@ -147,6 +146,18 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Spawn)
 }
 
 
+struct MoveOnly
+{
+  MoveOnly() {}
+
+  MoveOnly(const MoveOnly&) = delete;
+  MoveOnly(MoveOnly&&) = default;
+
+  MoveOnly& operator=(const MoveOnly&) = delete;
+  MoveOnly& operator=(MoveOnly&&) = default;
+};
+
+
 class DispatchProcess : public Process<DispatchProcess>
 {
 public:
@@ -155,14 +166,17 @@ public:
   MOCK_METHOD1(func2, Future<bool>(bool));
   MOCK_METHOD1(func3, int(int));
   MOCK_METHOD2(func4, Future<bool>(bool, int));
+
+  void func5(MoveOnly&& mo) { func5_(mo); }
+  MOCK_METHOD1(func5_, void(const MoveOnly&));
+
+  bool func6(MoveOnly&& m1, MoveOnly&& m2, bool b) { return func6_(m1, m2, b); }
+  MOCK_METHOD3(func6_, bool(const MoveOnly&, const MoveOnly&, bool));
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Dispatch)
+TEST(ProcessTest, THREADSAFE_Dispatch)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   DispatchProcess process;
 
   EXPECT_CALL(process, func0());
@@ -173,11 +187,14 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Dispatch)
   EXPECT_CALL(process, func2(_))
     .WillOnce(ReturnArg<0>());
 
+  EXPECT_CALL(process, func5_(_));
+
   PID<DispatchProcess> pid = spawn(&process);
 
   ASSERT_FALSE(!pid);
 
   dispatch(pid, &DispatchProcess::func0);
+  dispatch(pid, &DispatchProcess::func5, MoveOnly());
 
   Future<bool> future;
 
@@ -194,11 +211,8 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Dispatch)
 }
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Defer1)
+TEST(ProcessTest, THREADSAFE_Defer1)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   DispatchProcess process;
 
   EXPECT_CALL(process, func0());
@@ -211,6 +225,11 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Defer1)
 
   EXPECT_CALL(process, func4(_, _))
     .WillRepeatedly(ReturnArg<0>());
+
+  EXPECT_CALL(process, func5_(_));
+
+  EXPECT_CALL(process, func6_(_, _, _))
+    .WillRepeatedly(ReturnArg<2>());
 
   PID<DispatchProcess> pid = spawn(&process);
 
@@ -259,6 +278,26 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Defer1)
     EXPECT_TRUE(future.get());
   }
 
+  {
+    lambda::CallableOnce<void()> func5 =
+      defer(pid, &DispatchProcess::func5, MoveOnly());
+    std::move(func5)();
+  }
+
+  {
+    lambda::CallableOnce<Future<bool>(MoveOnly&&)> func6 =
+      defer(pid, &DispatchProcess::func6, MoveOnly(), lambda::_1, true);
+    future = std::move(func6)(MoveOnly());
+    EXPECT_TRUE(future.get());
+  }
+
+  {
+    lambda::CallableOnce<Future<bool>(MoveOnly&&)> func6 =
+      defer(pid, &DispatchProcess::func6, MoveOnly(), lambda::_1, false);
+    future = std::move(func6)(MoveOnly());
+    EXPECT_FALSE(future.get());
+  }
+
   // Only take const &!
 
   terminate(pid);
@@ -292,11 +331,8 @@ private:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Defer2)
+TEST(ProcessTest, THREADSAFE_Defer2)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   DeferProcess process;
 
   PID<DeferProcess> pid = spawn(process);
@@ -327,11 +363,8 @@ void set(T* t1, const T& t2)
 }
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Defer3)
+TEST(ProcessTest, THREADSAFE_Defer3)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   std::atomic_bool bool1(false);
   std::atomic_bool bool2(false);
 
@@ -362,11 +395,8 @@ public:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Handlers)
+TEST(ProcessTest, THREADSAFE_Handlers)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   HandlersProcess process;
 
   Future<Nothing> func;
@@ -388,11 +418,8 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Handlers)
 
 // Tests DROP_MESSAGE and DROP_DISPATCH and in particular that an
 // event can get dropped before being processed.
-// NOTE: GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Expect)
+TEST(ProcessTest, THREADSAFE_Expect)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   HandlersProcess process;
 
   EXPECT_CALL(process, func(_, _))
@@ -420,11 +447,8 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Expect)
 
 
 // Tests the FutureArg<N> action.
-// NOTE: GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Action)
+TEST(ProcessTest, THREADSAFE_Action)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   HandlersProcess process;
 
   PID<HandlersProcess> pid = spawn(&process);
@@ -468,11 +492,8 @@ public:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Inheritance)
+TEST(ProcessTest, THREADSAFE_Inheritance)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   DerivedProcess process;
 
   EXPECT_CALL(process, func())
@@ -499,11 +520,8 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Inheritance)
 }
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Thunk)
+TEST(ProcessTest, THREADSAFE_Thunk)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   struct Thunk
   {
     static int run(int i)
@@ -545,11 +563,8 @@ public:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Delegate)
+TEST(ProcessTest, THREADSAFE_Delegate)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   DelegateeProcess delegatee;
   DelegatorProcess delegator(delegatee.self());
 
@@ -579,11 +594,8 @@ public:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Delay)
+TEST(ProcessTest, THREADSAFE_Delay)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   Clock::pause();
 
   std::atomic_bool timeoutCalled(false);
@@ -619,11 +631,8 @@ public:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Order)
+TEST(ProcessTest, THREADSAFE_Order)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   Clock::pause();
 
   TimeoutProcess process1;
@@ -675,11 +684,8 @@ public:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Donate)
+TEST(ProcessTest, THREADSAFE_Donate)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   DonateProcess process;
   spawn(process);
 
@@ -754,7 +760,11 @@ TEST(ProcessTest, InjectExited)
 class MessageEventProcess : public Process<MessageEventProcess>
 {
 public:
-  MOCK_METHOD1(visit, void(const MessageEvent&));
+  // This is a workaround for mocking methods taking
+  // rvalue reference parameters.
+  // See https://github.com/google/googletest/issues/395
+  void consume(MessageEvent&& event) { consume_(event.message); }
+  MOCK_METHOD1(consume_, void(const Message&));
 };
 
 
@@ -769,9 +779,9 @@ protected:
     MessageEventProcess coordinator;
     spawn(coordinator);
 
-    Future<MessageEvent> event;
-    EXPECT_CALL(coordinator, visit(_))
-      .WillOnce(FutureArg<0>(&event));
+    Future<Message> message;
+    EXPECT_CALL(coordinator, consume_(_))
+      .WillOnce(FutureArg<0>(&message));
 
     Try<Subprocess> s = process::subprocess(
         path::join(BUILD_DIR, "test-linkee") +
@@ -780,10 +790,10 @@ protected:
     linkee = s.get();
 
     // Wait until the subprocess sends us a message.
-    AWAIT_ASSERT_READY(event);
+    AWAIT_ASSERT_READY(message);
 
     // Save the PID of the linkee.
-    pid = event->message->from;
+    pid = message->from;
 
     terminate(coordinator);
     wait(coordinator);
@@ -869,7 +879,7 @@ public:
 
   void ping_linkee()
   {
-    send(pid, "whatever", "", 0);
+    send(pid, "whatever");
   }
 
   MOCK_METHOD1(exited, void(const UPID&));
@@ -1172,11 +1182,8 @@ public:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Settle)
+TEST(ProcessTest, THREADSAFE_Settle)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   Clock::pause();
   SettleProcess process;
   spawn(process);
@@ -1188,11 +1195,8 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Settle)
 }
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Pid)
+TEST(ProcessTest, THREADSAFE_Pid)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   TimeoutProcess process;
 
   PID<TimeoutProcess> pid = process;
@@ -1224,11 +1228,8 @@ public:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Listener)
+TEST(ProcessTest, THREADSAFE_Listener)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   MultipleListenerProcess process;
 
   EXPECT_CALL(process, event1());
@@ -1253,23 +1254,17 @@ public:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Executor)
+TEST(ProcessTest, THREADSAFE_Executor_Defer)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
-  std::atomic_bool event1Called(false);
-  std::atomic_bool event2Called(false);
-
   EventReceiver receiver;
+  Executor executor;
+
+  CountDownLatch event1Called;
 
   EXPECT_CALL(receiver, event1(42))
-    .WillOnce(Assign(&event1Called, true));
-
-  EXPECT_CALL(receiver, event2("event2"))
-    .WillOnce(Assign(&event2Called, true));
-
-  Executor executor;
+    .WillOnce(InvokeWithoutArgs([&]() {
+      event1Called.decrement();
+    }));
 
   Deferred<void(int)> event1 =
     executor.defer([&receiver](int i) {
@@ -1278,6 +1273,15 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Executor)
 
   event1(42);
 
+  AWAIT_READY(event1Called.triggered());
+
+  CountDownLatch event2Called;
+
+  EXPECT_CALL(receiver, event2("event2"))
+    .WillOnce(InvokeWithoutArgs([&]() {
+      event2Called.decrement();
+    }));
+
   Deferred<void(const string&)> event2 =
     executor.defer([&receiver](const string& s) {
       return receiver.event2(s);
@@ -1285,15 +1289,70 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Executor)
 
   event2("event2");
 
-  while (event1Called.load() == false);
-  while (event2Called.load() == false);
+  AWAIT_READY(event2Called.triggered());
+}
+
+
+TEST(ProcessTest, THREADSAFE_Executor_Execute)
+{
+  Executor executor;
+
+  // A void immutable lambda.
+  CountDownLatch f1Result;
+  auto f1 = [&f1Result] {
+    f1Result.decrement();
+  };
+
+  // Specify the return type explicitly for type checking. Same below.
+  Future<Nothing> f1Called = executor.execute(f1);
+
+  AWAIT_READY(f1Called);
+  AWAIT_READY(f1Result.triggered());
+
+  // A void mutable bind.
+  CountDownLatch f2Result;
+  int f2State = 0;
+  auto f2 = [&f2Result, f2State](int) mutable -> void {
+    f2State++;
+    f2Result.decrement();
+  };
+
+  Future<Nothing> f2Called = executor.execute(std::bind(f2, 42));
+
+  AWAIT_READY(f2Called);
+  AWAIT_READY(f2Result.triggered());
+
+  // A non-void immutable lambda.
+  // NOTE: It appears that g++ throws away the cv-qualifiers when doing
+  // the lvalue-to-rvalue conversion for the returned string but clang
+  // does not, so `f3` should return a non-constant string.
+  string f3Result = "f3";
+  auto f3 = [&f3Result] {
+    return f3Result;
+  };
+
+  Future<string> f3Called = executor.execute(f3);
+
+  AWAIT_EXPECT_EQ(f3Result, f3Called);
+
+  // A mutable bind returning a future.
+  const string f4Result = "f4";
+  int f4State = 0;
+  auto f4 = [&f4Result, f4State](int) mutable -> Future<string> {
+    f4State++;
+    return f4Result;
+  };
+
+  Future<string> f4Called = executor.execute(std::bind(f4, 42));
+
+  AWAIT_EXPECT_EQ(f4Result, f4Called);
 }
 
 
 class RemoteProcess : public Process<RemoteProcess>
 {
 public:
-  RemoteProcess()
+  RemoteProcess() : ProcessBase(process::ID::generate("remote"))
   {
     install("handler", &RemoteProcess::handler);
   }
@@ -1302,11 +1361,8 @@ public:
 };
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Remote)
+TEST(ProcessTest, THREADSAFE_Remote)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   RemoteProcess process;
   spawn(process);
 
@@ -1321,12 +1377,15 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Remote)
 
   AWAIT_READY(socket.connect(process.self().address));
 
+  Try<Address> sender = socket.address();
+  ASSERT_SOME(sender);
+
   Message message;
   message.name = "handler";
-  message.from = UPID();
+  message.from = UPID("sender", sender.get());
   message.to = process.self();
 
-  const string data = MessageEncoder::encode(&message);
+  const string data = MessageEncoder::encode(message);
 
   AWAIT_READY(socket.send(data));
 
@@ -1338,11 +1397,8 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Remote)
 
 
 // Like the 'remote' test but uses http::connect.
-// NOTE: GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Http1)
+TEST(ProcessTest, THREADSAFE_Http1)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   RemoteProcess process;
   spawn(process);
 
@@ -1357,6 +1413,11 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Http1)
 
   http::Connection connection = connect.get();
 
+  Try<process::network::Address> address = connection.localAddress;
+  ASSERT_SOME(address);
+
+  UPID from("sender", process::network::convert<Address>(address.get()).get());
+
   Future<UPID> pid;
   Future<string> body;
   EXPECT_CALL(process, handler(_, _))
@@ -1366,21 +1427,19 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Http1)
   http::Request request;
   request.method = "POST";
   request.url = url;
-  request.headers["User-Agent"] = "libprocess/";
+  request.headers["User-Agent"] = "libprocess/" + stringify(from);
+  request.keepAlive = true;
   request.body = "hello world";
 
-  // Send the libprocess request. Note that we will not
-  // receive a 202 due to the use of the `User-Agent`
-  // header, therefore we need to explicitly disconnect!
   Future<http::Response> response = connection.send(request);
 
   AWAIT_READY(body);
   ASSERT_EQ("hello world", body.get());
 
   AWAIT_READY(pid);
-  ASSERT_EQ(UPID(), pid.get());
+  ASSERT_EQ(from, pid.get());
 
-  EXPECT_TRUE(response.isPending());
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Accepted().status, response);
 
   AWAIT_READY(connection.disconnect());
 
@@ -1391,11 +1450,10 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Http1)
 
 // Like 'http1' but uses the 'Libprocess-From' header. We can
 // also use http::post here since we expect a 202 response.
-// NOTE: GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Http2)
+//
+// TODO(neilc): This test currently does not work on Windows (MESOS-7527).
+TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, THREADSAFE_Http2)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   RemoteProcess process;
   spawn(process);
 
@@ -1405,14 +1463,14 @@ TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Http2)
 
   Socket socket = create.get();
 
-  ASSERT_SOME(socket.bind(Address::ANY_ANY()));
+  ASSERT_SOME(socket.bind(inet4::Address::ANY_ANY()));
 
   // Create a UPID for 'Libprocess-From' based on the IP and port we
   // got assigned.
   Try<Address> address = socket.address();
   ASSERT_SOME(address);
 
-  UPID from("", address.get());
+  UPID from("", process.self().address.ip, address->port);
 
   ASSERT_SOME(socket.listen(1));
 
@@ -1504,11 +1562,8 @@ static string itoa2(int* const& i)
 }
 
 
-// GTEST_IS_THREADSAFE is not defined on Windows. See MESOS-5903.
-TEST_TEMP_DISABLED_ON_WINDOWS(ProcessTest, Async)
+TEST(ProcessTest, THREADSAFE_Async)
 {
-  ASSERT_TRUE(GTEST_IS_THREADSAFE);
-
   // Non-void functions with different no.of args.
   EXPECT_EQ(1, async(&foo).get());
   EXPECT_EQ(10, async(&foo1, 10).get());
@@ -1763,18 +1818,19 @@ TEST(ProcessTest, PercentEncodedURLs)
   EXPECT_CALL(process, handler1(_, _))
     .WillOnce(FutureSatisfy(&handler1));
 
+  UPID from("sender", process.self().address.ip, 99);
+
   http::Request request;
   request.method = "POST";
   request.url = url;
-  request.headers["User-Agent"] = "libprocess/";
+  request.headers["User-Agent"] = "libprocess/" + stringify(from);
+  request.keepAlive = true;
 
-  // Send the libprocess request. Note that we will not
-  // receive a 202 due to the use of the `User-Agent`
-  // header, therefore we need to explicitly disconnect!
   Future<http::Response> response = connection.send(request);
 
   AWAIT_READY(handler1);
-  EXPECT_TRUE(response.isPending());
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Accepted().status, response);
 
   AWAIT_READY(connection.disconnect());
 
@@ -1787,9 +1843,7 @@ TEST(ProcessTest, PercentEncodedURLs)
 
   response = http::get(pid, "handler2");
 
-  AWAIT_READY(response);
-  EXPECT_EQ(http::Status::OK, response->code);
-  EXPECT_EQ(http::Status::string(http::Status::OK), response->status);
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response);
 
   terminate(process);
   wait(process);

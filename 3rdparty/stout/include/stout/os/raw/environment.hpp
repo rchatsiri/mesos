@@ -56,7 +56,7 @@ extern char** environ;
 //
 // NOTE: These functions were originally called `environment` and not `environ`
 // because on Windows, `environ` is a macro, and not an `extern char**` as it
-// is in the POSIX standard. The existance of this macro on Windows makes it
+// is in the POSIX standard. The existence of this macro on Windows makes it
 // impossible to use a function called `os::environ`.
 namespace os {
 namespace raw {
@@ -121,10 +121,12 @@ class Envp
 public:
   Envp(Envp&& that)
     : envp(that.envp),
-      size(that.size)
+      size(that.size),
+      environment(that.environment)
   {
     that.envp = nullptr;
     that.size = 0;
+    that.environment = std::map<std::string, std::string>();
   }
 
   template <typename Map>
@@ -137,6 +139,7 @@ public:
     size_t index = 0;
 
     for (auto it = map.begin(); it != map.end(); ++it) {
+      environment[stringify(it->first)] = stringify(it->second);
       std::string entry = stringify(it->first) + "=" + stringify(it->second);
       envp[index] = new char[entry.size() + 1];
       ::memcpy(envp[index], entry.c_str(), entry.size() + 1);
@@ -157,6 +160,7 @@ public:
     foreachpair (const std::string& key,
                  const JSON::Value& value,
                  object.values) {
+      environment[key] = stringify(value.as<JSON::String>().value);
       std::string entry = key + "=" + value.as<JSON::String>().value;
       envp[index] = new char[entry.size() + 1];
       ::memcpy(envp[index], entry.c_str(), entry.size() + 1);
@@ -178,9 +182,14 @@ public:
     delete[] envp;
   }
 
-  operator char**()
+  operator char**() const
   {
     return envp;
+  }
+
+  operator std::map<std::string, std::string>()
+  {
+    return environment;
   }
 
 private:
@@ -189,6 +198,7 @@ private:
 
   char **envp;
   size_t size;
+  std::map<std::string, std::string> environment;
 };
 
 } // namespace raw {

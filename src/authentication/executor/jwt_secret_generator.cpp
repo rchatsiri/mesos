@@ -22,8 +22,8 @@
 #include <stout/stringify.hpp>
 
 namespace mesos {
-namespace http {
 namespace authentication {
+namespace executor {
 
 using process::Failure;
 using process::Future;
@@ -35,7 +35,7 @@ using process::http::authentication::Principal;
 using std::string;
 
 
-JWTSecretGenerator::JWTSecretGenerator(const std::string& secret)
+JWTSecretGenerator::JWTSecretGenerator(const string& secret)
   : secret_(secret) {}
 
 
@@ -70,6 +70,6 @@ Future<Secret> JWTSecretGenerator::generate(const Principal& principal)
   return result;
 }
 
+} // namespace executor {
 } // namespace authentication {
-} // namespace http {
 } // namespace mesos {

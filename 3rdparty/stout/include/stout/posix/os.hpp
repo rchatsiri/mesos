@@ -65,7 +65,6 @@
 #include <stout/os/os.hpp>
 #include <stout/os/permissions.hpp>
 #include <stout/os/read.hpp>
-#include <stout/os/realpath.hpp>
 #include <stout/os/rename.hpp>
 #include <stout/os/sendfile.hpp>
 #include <stout/os/signals.hpp>
@@ -213,8 +212,6 @@ inline Try<Nothing> mknod(
 
   return Nothing();
 }
-
-
 
 
 // Suspends execution for the given duration.

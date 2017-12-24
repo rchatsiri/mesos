@@ -38,10 +38,15 @@
 using namespace mesos;
 using namespace mesos::internal;
 
+using std::cerr;
+using std::cout;
+using std::endl;
 using std::string;
 using std::vector;
 
 using mesos::Resources;
+
+constexpr char FRAMEWORK_NAME[] = "No Executor Framework";
 
 
 static Offer::Operation LAUNCH(const vector<TaskInfo>& tasks)
@@ -91,8 +96,7 @@ public:
     LOG(INFO) << "Reregistered with master " << masterInfo;
   }
 
-  virtual void disconnected(
-      SchedulerDriver* driver)
+  virtual void disconnected(SchedulerDriver* driver)
   {
     LOG(INFO) << "Disconnected!";
   }
@@ -130,16 +134,12 @@ public:
     }
   }
 
-  virtual void offerRescinded(
-      SchedulerDriver* driver,
-      const OfferID& offerId)
+  virtual void offerRescinded(SchedulerDriver* driver, const OfferID& offerId)
   {
     LOG(INFO) << "Offer " << offerId << " has been rescinded";
   }
 
-  virtual void statusUpdate(
-      SchedulerDriver* driver,
-      const TaskStatus& status)
+  virtual void statusUpdate(SchedulerDriver* driver, const TaskStatus& status)
   {
     if (!activeTasks.contains(status.task_id())) {
       LOG(WARNING) << "Unknown task '" << status.task_id() << "'"
@@ -192,9 +192,7 @@ public:
                << "' on agent " << slaveId << ": '" << data << "'";
   }
 
-  virtual void slaveLost(
-      SchedulerDriver* driver,
-      const SlaveID& slaveId)
+  virtual void slaveLost(SchedulerDriver* driver, const SlaveID& slaveId)
   {
     LOG(INFO) << "Lost agent " << slaveId;
   }
@@ -209,9 +207,7 @@ public:
               << slaveId << ", " << WSTRINGIFY(status);
   }
 
-  virtual void error(
-      SchedulerDriver* driver,
-      const string& message)
+  virtual void error(SchedulerDriver* driver, const string& message)
   {
     LOG(ERROR) << message;
   }
@@ -296,39 +292,47 @@ public:
 int main(int argc, char** argv)
 {
   Flags flags;
-
   Try<flags::Warnings> load = flags.load("MESOS_", argc, argv);
 
-  if (load.isError()) {
-    EXIT(EXIT_FAILURE)
-      << flags.usage(load.error());
+  if (flags.help) {
+    cout << flags.usage() << endl;
+    return EXIT_SUCCESS;
   }
+
+  if (load.isError()) {
+    cerr << flags.usage(load.error()) << endl;
+    return EXIT_FAILURE;
+  }
+
+  if (flags.master.isNone()) {
+    cerr << flags.usage("Missing required option --master") << endl;
+    return EXIT_FAILURE;
+  }
+
+  if (flags.principal.isSome() != flags.secret.isSome()) {
+    cerr << flags.usage(
+                "Both --principal and --secret are required"
+                " to enable authentication")
+         << endl;
+    return EXIT_FAILURE;
+  }
+
+  logging::initialize(argv[0], true, flags); // Catch signals.
 
   // Log any flag warnings.
   foreach (const flags::Warning& warning, load->warnings) {
     LOG(WARNING) << warning.message;
   }
 
-  if (flags.help) {
-    EXIT(EXIT_SUCCESS)
-      << flags.usage();
-  }
-
-  if (flags.master.isNone()) {
-    EXIT(EXIT_FAILURE)
-      << flags.usage("Missing required option --master");
-  }
-
-  if (flags.principal.isSome() != flags.secret.isSome()) {
-    EXIT(EXIT_FAILURE)
-      << flags.usage("Both --principal and --secret are required"
-                     " to enable authentication");
-  }
-
   FrameworkInfo framework;
   framework.set_user(""); // Have Mesos fill in the current user.
-  framework.set_name("No Executor Framework");
+  framework.set_name(FRAMEWORK_NAME);
   framework.set_checkpoint(flags.checkpoint);
+  framework.add_roles("*");
+  framework.add_capabilities()->set_type(
+      FrameworkInfo::Capability::MULTI_ROLE);
+  framework.add_capabilities()->set_type(
+      FrameworkInfo::Capability::RESERVATION_REFINEMENT);
 
   if (flags.task_revocable_resources.isSome()) {
     framework.add_capabilities()->set_type(
@@ -339,13 +343,11 @@ int main(int argc, char** argv)
     framework.set_principal(flags.principal.get());
   }
 
-  Try<Resources> resources =
-    Resources::parse(flags.task_resources);
+  Try<Resources> resources = Resources::parse(flags.task_resources);
 
   if (resources.isError()) {
-    EXIT(EXIT_FAILURE)
-      << flags.usage("Invalid --task_resources: " +
-                     resources.error());
+    EXIT(EXIT_FAILURE) << flags.usage(
+        "Invalid --task_resources: " + resources.error());
   }
 
   Resources taskResources = resources.get();
@@ -355,9 +357,8 @@ int main(int argc, char** argv)
       Resources::parse(flags.task_revocable_resources.get());
 
     if (revocableResources.isError()) {
-      EXIT(EXIT_FAILURE)
-        << flags.usage("Invalid --task_revocable_resources: " +
-                       revocableResources.error());
+      EXIT(EXIT_FAILURE) << flags.usage(
+          "Invalid --task_revocable_resources: " + revocableResources.error());
     }
 
     foreach (Resource revocable, revocableResources.get()) {
@@ -366,9 +367,7 @@ int main(int argc, char** argv)
     }
   }
 
-  taskResources.allocate(framework.role());
-
-  logging::initialize(argv[0], flags, true); // Catch signals.
+  taskResources.allocate(framework.roles(0));
 
   NoExecutorScheduler scheduler(
       framework,

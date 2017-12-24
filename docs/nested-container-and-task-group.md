@@ -29,7 +29,7 @@ pod:
   container's failure would cause all other containers being
   cleaned up.
 
-In order to have first class support for running “pods”, two new
+In order to have first class support for running "pods", two new
 primitives are introduced in Mesos: `Task Group` and `Nested Container`.
 
 
@@ -111,20 +111,24 @@ atomically.
 
 
 To use the default executor for launching the task group, the framework should:
+
 * Set `ExecutorInfo.type` as `DEFAULT`.
 * Set `ExecutorInfo.resources` for the resources needed for the executor.
 
 Please note that the following fields in the `ExecutorInfo` are not allowed to set when using the default executor:
+
 * `ExecutorInfo.command`.
 * `ExecutorInfo.container.type`, `ExecutorInfo.container.docker` and `ExecutorInfo.container.mesos`.
 
 To allow containers to share a network namespace:
+
 * Set `ExecutorInfo.container.network`.
 
 To allow containers to share an ephemeral volume:
-Specify the `volume/sandbox_path` isolator.
+
+* Specify the `volume/sandbox_path` isolator.
 * Set `TaskGroupInfo.tasks.container.volumes.source.type` as `SANDBOX_PATH`.
-* Set `TaskGroupInfo.tasks.container.volumes.source.sandbox_path.type` as `PARENT` and the path relative to the parent container’s sandbox.
+* Set `TaskGroupInfo.tasks.container.volumes.source.sandbox_path.type` as `PARENT` and the path relative to the parent container's sandbox.
 
 ## Executor API
 
@@ -292,7 +296,7 @@ executor.
 # Future Work
 
 * Authentication and authorization on the new Agent API.
-* Command health checks inside of the container’s mount namespace.
+* Command health checks inside of the container's mount namespace.
 * Resource isolation for nested containers.
 * Resource statistics reporting for nested containers.
 * Multiple task groups.
