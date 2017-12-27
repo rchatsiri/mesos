@@ -2,3 +2,6 @@
 /build/
 build/
 build/*
+
+src/cli_new/.virtualenv/
+src/cli_new/.virtualenv/*
