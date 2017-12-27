@@ -17,3 +17,5 @@ m4/
 m4/*
 
 ltmain.sh
+
+support/mesos-style.py
