@@ -8,4 +8,5 @@ Makefile.in
 configure
 m4/
 m4/*
+*.m4
 ltmain.sh
