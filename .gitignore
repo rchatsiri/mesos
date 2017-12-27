@@ -5,3 +5,13 @@ build/*
 
 src/cli_new/.virtualenv/
 src/cli_new/.virtualenv/*
+
+autom4te.cache/
+autom4te.cache/*
+
+Makefile.in
+
+configure
+
+m4/
+m4/*
