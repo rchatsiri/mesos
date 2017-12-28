@@ -16,4 +16,7 @@ configure
 m4/
 m4/*
 
+*.*.swp
+*.*.swo
+
 ltmain.sh
