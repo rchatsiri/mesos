@@ -635,6 +635,9 @@ nodist_docker_HEADERS =							\
   ../include/mesos/docker/v1.pb.h					\
   ../include/mesos/docker/v2.pb.h
 
+
+lxcdir = $(pkgincludedir)/lxc
+
 executordir = $(pkgincludedir)/executor
 
 executor_HEADERS =							\
@@ -928,6 +931,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   common/validation.cpp							\
   common/values.cpp							\
   docker/docker.cpp							\
+  lxc/lxc.cpp                                                           \
   docker/spec.cpp							\
   exec/exec.cpp								\
   executor/executor.cpp							\
@@ -1067,6 +1071,8 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   credentials/credentials.hpp						\
   docker/docker.hpp							\
   docker/executor.hpp							\
+  lxc/lxc.hpp                                                           \
+  lxc/executor.hpp                                                      \
   examples/test_anonymous_module.hpp					\
   examples/test_module.hpp						\
   examples/utils.hpp							\
@@ -1607,6 +1613,12 @@ pkglibexec_PROGRAMS += mesos-docker-executor
 mesos_docker_executor_SOURCES = docker/executor.cpp
 mesos_docker_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_docker_executor_LDADD = libmesos.la $(LDADD)
+
+pkglibexec_PROGRAMS += mesos-lxc-executor
+mesos_lxc_executor_SOURCES = lxc/executor.cpp
+mesos_lxc_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
+mesos_lxc_executor_LDADD = libmesos.la $(LDADD)
+
 
 pkglibexec_PROGRAMS += mesos-tcp-connect
 mesos_tcp_connect_SOURCES = checks/tcp_connect.cpp

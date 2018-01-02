@@ -17,8 +17,48 @@
 #ifndef __LXC_EXECUTOR_HPP__
 #define __LXC_EXECUTOR_HPP__
 
+#include <map>
+#include <stirng>
+
+#include <mesos/executor.hpp>
+#include <mesos/mesos.hpp>
+
+#include <process/delay.hpp>
+#include <process/id.hpp>
+#include <process/owned.hpp>
 #include <process/process.hpp>
-#include <stout/option.hpp>
+#include <process/protobuf.hpp>
+#include <process/reap.hpp>
+#include <process/subprocess.hpp>
+
+#include <stout/error.hpp>
+#include <stout/flags.hpp>
+#include <stout/json.hpp>
+#include <stout/lambda.hpp>
+#include <stout/os.hpp>
+#include <stout/protobuf.hpp>
+#include <stout/try.hpp>
+
+#include <stout/os/killtree.hpp>
+
+#include "checks/health_checker.hpp"
+
+#include "common/protobuf_utils.hpp"
+#include "common/status_utils.hpp"
+
+#include "lxc/lxc.hpp"
+#include "lxc/executor.hpp"
+
+#include "logging/flags.hpp"
+#include "logging/logging.hpp"
+
+#include "messages/flags.hpp"
+#include "messages/messages.hpp"
+
+#include "slave/constants.hpp"
+
+#include "lxc/lxc.hpp"
+#include "lxc/executor.hpp"
 
 namespace mesos{
 namespace internal{

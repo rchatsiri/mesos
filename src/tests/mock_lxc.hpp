@@ -14,42 +14,43 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifndef __TESTS_LXC_HPP__
+#define __TESTS_LXC_HPP__
+
+#include <list>
 #include <map>
+#include <string>
 #include <vector>
 
-#include <stout/error.hpp>
-#include <stout/foreach.hpp>
+#include <gmock/gmock.h>
+
+#include <mesos/resources.hpp>
+
+#include <mesos/slave/container_logger.hpp>
+
+#include <process/future.hpp>
+#include <process/owned.hpp>
+#include <process/shared.hpp>
+
 #include <stout/json.hpp>
-#include <stout/lambda.hpp>
-#include <stout/os.hpp>
-#include <stout/path.hpp>
-#include <stout/result.hpp>
-#include <stout/strings.hpp>
-#include <stout/stringify.hpp>
+#include <stout/option.hpp>
 
-#include <stout/os/constants.hpp>
-#include <stout/os/killtree.hpp>
-#include <stout/os/read.hpp>
-#include <stout/os/write.hpp>
+#include "slave/containerizer/docker.hpp"
 
-#include <process/check.hpp>
-#include <process/collect.hpp>
-#include <process/io.hpp>
+#include "slave/containerizer/lxc.hpp"
 
-#include "common/status_utils.hpp"
+#include "slave/containerizer/mesos/isolators/gpu/components.hpp"
 
-#ifdef __linux__
-#include "linux/cgroups.hpp"
-#endif // __linux__
+using ::testing::_;
+using ::testing::Invoke;
 
-#include "lxc/lxc.hpp"
+using mesos::internal::slave::NvidiaComponents;
 
-using namespace mesos;
-using namespace mesos::internal::slave;
-using namespace process;
-
-
-Try<Owned<Lxc>> Lxc::create(
-  const Option<JSON::Object>& config)
+class MockLxc : public Lxc
 {
-}
+public:
+  void readJsonCreateImage();
+};
+
+
+#endif /* __TESTS_LXC_HPP__ */

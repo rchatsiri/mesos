@@ -17,15 +17,32 @@
 #ifndef __LXC_HPP__
 #define __LXC_HPP__
 
+#include <process/future.hpp>
+#include <process/owned.hpp>
+#include <process/subprocess.hpp>
+
+#include <stout/duration.hpp>
 #include <stout/json.hpp>
+#include <stout/none.hpp>
+#include <stout/nothing.hpp>
+#include <stout/option.hpp>
+#include <stout/path.hpp>
+#include <stout/version.hpp>
+
+#include <stout/os/rm.hpp>
+
+#include "mesos/resources.hpp"
+
+#include "messages/flags.hpp"
 
 class Lxc
 {
 public:
   // Create lxc service.
-  static Try<process::Owend<Lxc>> create(
+  Try<process::Owned<Lxc>> create(
      const Option<JSON::Object>& config = None());
 
+  virtual ~Lxc() {}
 private:
   static process::Future<Version> _version(
      const std::string& cmd,

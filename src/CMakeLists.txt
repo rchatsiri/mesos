@@ -265,6 +265,11 @@ set(EXECUTOR_SRC
   executor/v0_v1executor.cpp
   )
 
+set(LXC_SRC
+  lxc/lxc.cpp
+  lxc/spec.cpp
+  )
+
 set(FILES_SRC
   files/files.cpp
   )
@@ -486,6 +491,7 @@ set(MESOS_SRC
   ${AUTHORIZER_SRC}
   ${COMMON_SRC}
   ${DOCKER_SRC}
+  ${LXC_SRC}
   ${EXECUTOR_SRC}
   ${FILES_SRC}
   ${HEALTH_CHECK_SRC}
@@ -599,6 +605,7 @@ target_link_libraries(${MESOS_LIBS_TARGET} ${MESOS_PROTOBUF_TARGET} ${AGENT_LIBS
 add_subdirectory(checks/)
 add_subdirectory(cli/)
 add_subdirectory(docker/)
+add_subdirectory(lxc/)
 add_subdirectory(examples/)
 add_subdirectory(launcher/)
 add_subdirectory(local/)

@@ -14,42 +14,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifndef __LXC_EXECUTOR_HPP__
+#define __LXC_EXECUTOR_HPP__
+
+#include <stdio.h>
+
 #include <map>
-#include <vector>
+#include <string>
 
-#include <stout/error.hpp>
-#include <stout/foreach.hpp>
-#include <stout/json.hpp>
-#include <stout/lambda.hpp>
-#include <stout/os.hpp>
-#include <stout/path.hpp>
-#include <stout/result.hpp>
-#include <stout/strings.hpp>
-#include <stout/stringify.hpp>
+#include <process/process.hpp>
 
-#include <stout/os/constants.hpp>
-#include <stout/os/killtree.hpp>
-#include <stout/os/read.hpp>
-#include <stout/os/write.hpp>
+#include <stout/option.hpp>
 
-#include <process/check.hpp>
-#include <process/collect.hpp>
-#include <process/io.hpp>
+#include "logging/flags.hpp"
 
-#include "common/status_utils.hpp"
+namespace mesos {
+namespace internal {
+namespace docker {
 
-#ifdef __linux__
-#include "linux/cgroups.hpp"
-#endif // __linux__
+} // docker {
+} // internal {
+} // mesos {
 
-#include "lxc/lxc.hpp"
-
-using namespace mesos;
-using namespace mesos::internal::slave;
-using namespace process;
-
-
-Try<Owned<Lxc>> Lxc::create(
-  const Option<JSON::Object>& config)
-{
-}
+#endif // __LXC_EXECUTOR_HPP__

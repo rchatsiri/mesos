@@ -14,42 +14,52 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+
+#ifndef __LXC_CONTAINERIZER_HPP__
+#define __LXC_CONTAINERIZER_HPP__
+
+#include <list>
 #include <map>
-#include <vector>
+#include <set>
+#include <string>
 
-#include <stout/error.hpp>
-#include <stout/foreach.hpp>
-#include <stout/json.hpp>
-#include <stout/lambda.hpp>
-#include <stout/os.hpp>
-#include <stout/path.hpp>
-#include <stout/result.hpp>
-#include <stout/strings.hpp>
-#include <stout/stringify.hpp>
+#include <mesos/slave/container_logger.hpp>
 
-#include <stout/os/constants.hpp>
-#include <stout/os/killtree.hpp>
-#include <stout/os/read.hpp>
-#include <stout/os/write.hpp>
+#include <process/owned.hpp>
+#include <process/shared.hpp>
 
-#include <process/check.hpp>
-#include <process/collect.hpp>
-#include <process/io.hpp>
+#include <stout/flags.hpp>
+#include <stout/hashset.hpp>
 
-#include "common/status_utils.hpp"
-
-#ifdef __linux__
-#include "linux/cgroups.hpp"
-#endif // __linux__
 
 #include "lxc/lxc.hpp"
+#include "lxc/executor.hpp"
 
-using namespace mesos;
-using namespace mesos::internal::slave;
-using namespace process;
+#include "slave/containerizer/mesos/containerizer.hpp"
+#include "slave/containerizer/mesos/isolators/components.hpp"
 
 
-Try<Owned<Lxc>> Lxc::create(
-  const Option<JSON::Object>& config)
+namespace mesos{
+namespace internal{
+namespace slave{
+
+class LxcContainerizerProcess;
+
+class LxcContainerizer : public Containerizer
 {
+};
+
+
+class LxcContainerizerProcess
+  : public process::Process<LxcContainerizerProcess>
+{
+public:
+private:
 }
+
+
+} // namespace slave {
+} // namespace internal {
+} // namespace mesos {
+
+#endif /* __LXC_CONTRAINERIZER_HPP__ */
