@@ -1614,10 +1614,10 @@ mesos_docker_executor_SOURCES = docker/executor.cpp
 mesos_docker_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_docker_executor_LDADD = libmesos.la $(LDADD)
 
-pkglibexec_PROGRAMS += mesos-lxc-executor
-mesos_lxc_executor_SOURCES = lxc/executor.cpp
-mesos_lxc_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
-mesos_lxc_executor_LDADD = libmesos.la $(LDADD)
+#pkglibexec_PROGRAMS += mesos-lxc-executor
+#mesos_lxc_executor_SOURCES = lxc/executor.cpp
+#mesos_lxc_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
+#mesos_lxc_executor_LDADD = libmesos.la $(LDADD)
 
 
 pkglibexec_PROGRAMS += mesos-tcp-connect

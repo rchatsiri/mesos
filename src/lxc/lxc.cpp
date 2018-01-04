@@ -48,8 +48,8 @@ using namespace mesos;
 using namespace mesos::internal::slave;
 using namespace process;
 
-
+/*
 Try<Owned<Lxc>> Lxc::create(
   const Option<JSON::Object>& config)
 {
-}
+}*/

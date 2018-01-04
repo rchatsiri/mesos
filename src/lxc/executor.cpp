@@ -18,7 +18,7 @@
 #define __LXC_EXECUTOR_HPP__
 
 #include <map>
-#include <stirng>
+#include <string>
 
 #include <mesos/executor.hpp>
 #include <mesos/mesos.hpp>
@@ -64,7 +64,10 @@ namespace mesos{
 namespace internal{
 namespace lxc{
 
-
+int main(int argc, char** argv)
+{
+  return EXIT_SUCCESS;
+}
 
 } // namespace lxc {
 } // namespace internal {
