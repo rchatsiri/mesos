@@ -20,3 +20,15 @@ m4/*
 *.*.swo
 
 ltmain.sh
+
+
+.clang-format
+.reviewboardrc
+*.m4
+ar-lib
+compile
+config.guess
+config.sub
+depcomp
+install-sh
+missing
