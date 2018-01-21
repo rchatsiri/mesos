@@ -65,20 +65,20 @@ For additional information, see the LICENSE and NOTICE files.
 
   * LXC
 
-        * Create LXC by specific directory.
+     * Create LXC by specific directory.
 
           ``` sudo ./lxc-create -f /home/rchatsiri/workspacecpp/lxc-build/share/lxc/config/debian.common.conf  \
               -t /home/rchatsiri/workspacecpp/lxc-build/share/lxc/templates/lxc-debian \
               --name debian-inst01 --dir=/home/rchatsiri/workspacecpp/lxc-build/rootfs ```
 
-	* Read configuration.
+     * Read configuration.
 
           ```/home/ec2-user/workspacecpp/3rdlibs/lxc-build/var/lib/lxc/centos-test-10/config ```
 
-        * Update config.
+     * Update config.
 
           ``` sudo ./lxc-update-config -c  /home/ec2-user/workspacecpp/3rdlibs/lxc-build/var/lib/lxc/centos-test-10/config ```
 
-        * LXC start service.
+     * LXC start service.
 
           ``` sudo ./lxc-start --name centos-test-10 --logfile=/var/log/test-centos-10.log ```
