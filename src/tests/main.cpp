@@ -106,6 +106,8 @@ int main(int argc, char** argv)
       flags.usage("Only one of --modules or --modules_dir should be specified");
   }
 
+  // cout << "Module dir : " << flags.modulesDir.get() << endl;
+
   if (flags.modulesDir.isSome()) {
     Try<Nothing> result =
       mesos::modules::ModuleManager::load(flags.modulesDir.get());

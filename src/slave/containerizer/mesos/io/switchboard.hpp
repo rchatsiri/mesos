@@ -262,7 +262,7 @@ private:
       int stdoutToFd,
       int stderrFromFd,
       int stderrToFd,
-      const process::network::unix::Socket& socket,
+      const process::network::unix_impl::Socket& socket,
       bool waitForConnection,
       Option<Duration> heartbeatInterval);
 

@@ -22,7 +22,7 @@
 #include "slave/containerizer/mesos/paths.hpp"
 
 #ifndef __WINDOWS__
-namespace unix = process::network::unix;
+namespace unix = process::network::unix_impl;
 #endif // __WINDOWS__
 
 using mesos::slave::ContainerLaunchInfo;

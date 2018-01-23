@@ -36,7 +36,7 @@
 #include "mesos/resources.hpp"
 
 #include "tests/environment.hpp"
-#include "tests/flags.hpp"
+#include "pvm-tests/flags.hpp"
 #include "tests/mesos.hpp"
 
 using namespace process;

@@ -127,7 +127,7 @@ static void addContainerLoggerModules(Modules* modules)
   moduleParameter->set_value("rotate 4");
 }
 
-
+/*
 static void addHookModules(Modules* modules)
 {
   CHECK_NOTNULL(modules);
@@ -254,7 +254,7 @@ static void addMasterDetectorModules(Modules* modules)
       TestMasterDetector,
       "org_apache_mesos_TestMasterDetector");
 }
-
+*/
 
 Try<Nothing> initModules(const Option<Modules>& modules)
 {
@@ -274,28 +274,28 @@ Try<Nothing> initModules(const Option<Modules>& modules)
   addContainerLoggerModules(&mergedModules);
 
   // Add hook modules from testhook library.
-  addHookModules(&mergedModules);
+  // addHookModules(&mergedModules);
 
   // Add anonymous modules from testanonymous library.
-  addAnonymousModules(&mergedModules);
+  // addAnonymousModules(&mergedModules);
 
   // Add allocator modules from testallocator library.
-  addAllocatorModules(&mergedModules);
+  // addAllocatorModules(&mergedModules);
 
   // Add resource estimator modules from testresource_estimator library.
-  addResourceEstimatorModules(&mergedModules);
+  // addResourceEstimatorModules(&mergedModules);
 
   // Add authorizer modules from testauthorizer library.
-  addAuthorizerModules(&mergedModules);
+  // addAuthorizerModules(&mergedModules);
 
   // Add HTTP authenticator modules from testhttpauthenticator library.
-  addHttpAuthenticatorModules(&mergedModules);
+  // addHttpAuthenticatorModules(&mergedModules);
 
   // Add MasterContender module from testmastercontender library.
-  addMasterContenderModules(&mergedModules);
+  // addMasterContenderModules(&mergedModules);
 
   // Add MasterDetector module from testmasterdetector library.
-  addMasterDetectorModules(&mergedModules);
+  // addMasterDetectorModules(&mergedModules);
 
   return ModuleManager::load(mergedModules);
 }

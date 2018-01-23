@@ -14,8 +14,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#include(StoutTestsConfigure)
-#include(MesosTestsConfigure)
+set (CMAKE_CXX_STANDARD 11)
+set (CMAKE_CXX_FLAGS "-Wno-deprecated-declarations")
+
+include("../../3rdparty/libprocess/cmake/macros/External.cmake")
+
+include("../tests/cmake/MesosTestsConfigure.cmake")
+
+# Include file from cmake directory : src/tests/cmake/MesosTestsConfigure.cmake
+# include(MesosTestsConfigure)
+# Include file from cmake directory : stout/cmake/StoutTestConfigure.cmake
+include("../../3rdparty/stout/cmake/StoutTestsConfigure.cmake")
+
+#SET(CPPFLAGS += -DSOURCE_DIR="${CURRENT_CMAKE_SOURCE_DIR}/../")
+
+add_definitions(-DSOURCE_DIR="${CURRENT_CMAKE_SOURCE_DIR}/../")
 
 # Sources for a test helper binary.
 ###################################
@@ -84,69 +97,6 @@ if (LINUX)
     )
 endif ()
 
-# All the test sources.
-#######################
-#set(MESOS_TESTS_SRC
-#  ${MESOS_TESTS_SRC}
-#  ${MESOS_TESTS_UTILS_SRC}
-#  anonymous_tests.cpp
-#  api_tests.cpp
-#  attributes_tests.cpp
-#  authentication_tests.cpp
-#  check_tests.cpp
-#  command_executor_tests.cpp
-#  credentials_tests.cpp
-#  default_executor_tests.cpp
-#  exception_tests.cpp
-#  executor_http_api_tests.cpp
-#  fault_tolerance_tests.cpp
-#  fetcher_tests.cpp
-#  files_tests.cpp
-#  gc_tests.cpp
-#  health_check_tests.cpp
-#  hierarchical_allocator_tests.cpp
-#  hook_tests.cpp
-#  http_authentication_tests.cpp
-#  http_fault_tolerance_tests.cpp
-#  master_maintenance_tests.cpp
-#  master_slave_reconciliation_tests.cpp
-#  partition_tests.cpp
-#  paths_tests.cpp
-#  protobuf_io_tests.cpp
-#  rate_limiting_tests.cpp
-#  resource_offers_tests.cpp
-#  resource_provider_http_api_tests.cpp
-#  resource_provider_validation_tests.cpp
-#  resources_tests.cpp
-#  role_tests.cpp
-#  scheduler_driver_tests.cpp
-#  scheduler_event_call_tests.cpp
-#  scheduler_http_api_tests.cpp
-#  scheduler_tests.cpp
-#  slave_tests.cpp
-#  slave_validation_tests.cpp
-#  sorter_tests.cpp
-#  status_update_manager_tests.cpp
-#  uri_tests.cpp
-#  uri_fetcher_tests.cpp
-#  values_tests.cpp
-#  zookeeper_url_tests.cpp
-#  )
-
-#if (ENABLE_SSL)
-#  set(MESOS_TESTS_SRC
-#    ${MESOS_TESTS_SRC}
-#    secret_generator_tests.cpp
-#    )
-#endif ()
-
-#set(MESOS_TESTS_SRC
-#  ${MESOS_TESTS_SRC}
-#  common/http_tests.cpp
-#  common/recordio_tests.cpp
-#  common/type_utils_tests.cpp
-#  )
-
 set(MESOS_TESTS_SRC
   ${MESOS_TESTS_SRC}
   containerizer/containerizer_tests.cpp
@@ -154,66 +104,10 @@ set(MESOS_TESTS_SRC
   )
 
 if (NOT WIN32)
-#  set(MESOS_TESTS_SRC
-#    ${MESOS_TESTS_SRC}
-#    authorization_tests.cpp
-#    container_logger_tests.cpp
-#    cram_md5_authentication_tests.cpp
-#    disk_quota_tests.cpp
-#    dynamic_weights_tests.cpp
-#    examples_tests.cpp
-#    fetcher_cache_tests.cpp
-#    hdfs_tests.cpp
-#    log_tests.cpp
-#    logging_tests.cpp
-#    master_allocator_tests.cpp
-#    master_authorization_tests.cpp
-#    master_contender_detector_tests.cpp
-#    master_quota_tests.cpp
-#    master_tests.cpp
-#    master_validation_tests.cpp
-#    metrics_tests.cpp
-#    module_tests.cpp
-#    oversubscription_tests.cpp
-#    persistent_volume_endpoints_tests.cpp
-#    persistent_volume_tests.cpp
-#    protobuf_utils_tests.cpp
-#    reconciliation_tests.cpp
-#    registrar_tests.cpp
-#    reservation_endpoints_tests.cpp
-#    reservation_tests.cpp
-#    slave_authorization_tests.cpp
-#    slave_recovery_tests.cpp
-#    state_tests.cpp
-#    teardown_tests.cpp
-#    upgrade_tests.cpp
-#    )
-
-#  set(MESOS_TESTS_SRC
-#    ${MESOS_TESTS_SRC}
-#    common/command_utils_tests.cpp
-#    )
 
   set(MESOS_TESTS_SRC
     ${MESOS_TESTS_SRC}
-#   containerizer/appc_spec_tests.cpp
-#    containerizer/composing_containerizer_tests.cpp
-#    containerizer/cpu_isolator_tests.cpp
     containerizer/docker_containerizer_tests.cpp
-    containerizer/docker_spec_tests.cpp
-    #containerizer/environment_secret_isolator_tests.cpp
-    #containerizer/io_switchboard_tests.cpp
-    #containerizer/isolator_tests.cpp
-    #containerizer/memory_isolator_tests.cpp
-    #containerizer/mesos_containerizer_paths_tests.cpp
-    #containerizer/mesos_containerizer_tests.cpp
-    #containerizer/oci_spec_tests.cpp
-    #containerizer/posix_rlimits_isolator_tests.cpp
-    #containerizer/provisioner_appc_tests.cpp
-    #containerizer/provisioner_backend_tests.cpp
-    containerizer/provisioner_docker_tests.cpp
-    #containerizer/provisioner_paths_tests.cpp
-    #containerizer/volume_sandbox_path_isolator_tests.cpp
     )
 endif ()
 
@@ -222,24 +116,7 @@ if (LINUX)
     ${MESOS_TESTS_SRC}
     ldcache_tests.cpp
     ldd_tests.cpp
-    containerizer/capabilities_tests.cpp
-    containerizer/cgroups_isolator_tests.cpp
-    containerizer/cgroups_tests.cpp
-    containerizer/cni_isolator_tests.cpp
     containerizer/docker_volume_isolator_tests.cpp
-    containerizer/fs_tests.cpp
-    containerizer/linux_capabilities_isolator_tests.cpp
-    containerizer/linux_filesystem_isolator_tests.cpp
-    containerizer/memory_pressure_tests.cpp
-    containerizer/nested_mesos_containerizer_tests.cpp
-    containerizer/ns_tests.cpp
-    containerizer/nvidia_gpu_isolator_tests.cpp
-    containerizer/perf_tests.cpp
-    containerizer/rootfs.cpp
-    containerizer/runtime_isolator_tests.cpp
-    containerizer/sched_tests.cpp
-    containerizer/volume_image_isolator_tests.cpp
-    containerizer/volume_secret_isolator_tests.cpp
     )
 endif ()
 
@@ -251,6 +128,7 @@ include_directories(${MESOS_TESTS_INCLUDE_DIRS})
 # LINKING LIBRARIES (might generate, e.g., -L/path/to/thing on Linux).
 ######################################################################
 link_directories(${MESOS_TESTS_LIB_DIRS})
+link_directories(/home/rchatsiri/workspacecpp/mesos/build/src/.libs)
 
 # THE TEST AND HELPER EXECUTABLEs (generates, e.g., stout-tests, etc., on Linux).
 #################################$###############################################
@@ -261,6 +139,26 @@ add_executable(${TEST_HELPER_TARGET} EXCLUDE_FROM_ALL ${TEST_HELPER_SRC})
 ######################################################
 target_link_libraries(${MESOS_TESTS_TARGET} ${MESOS_TESTS_LIBS})
 target_link_libraries(${TEST_HELPER_TARGET} ${MESOS_TESTS_LIBS})
+#include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../)
+
+
+
+#external
+include_directories(/home/rchatsiri/workspacecpp/mesos/include)
+include_directories(/home/rchatsiri/workspacecpp/mesos/build/include)
+include_directories(/home/rchatsiri/workspacecpp/mesos/build/3rdparty/protobuf-3.3.0/src)
+include_directories(/home/rchatsiri/workspacecpp/mesos/3rdparty/stout/include)
+include_directories(/home/rchatsiri/workspacecpp/mesos/build/3rdparty/boost-1.53.0)
+include_directories(/home/rchatsiri/workspacecpp/mesos/src)
+include_directories(/home/rchatsiri/workspacecpp/mesos/build/3rdparty/glog-0.3.3/src)
+include_directories(/home/rchatsiri/workspacecpp/mesos/build/3rdparty/picojson-1.3.0/)
+include_directories(/home/rchatsiri/workspacecpp/mesos/3rdparty/libprocess/include)
+include_directories(/home/rchatsiri/workspacecpp/mesos/build/src)
+include_directories(/home/rchatsiri/workspacecpp/mesos/build/3rdparty/googletest-release-1.8.0/googlemock/include)
+include_directories(/home/rchatsiri/workspacecpp/mesos/build/include/mesos)
+include_directories(/home/rchatsiri/workspacecpp/mesos/build/3rdparty/nvml-352.79)
+include_directories(/home/rchatsiri/workspacecpp/mesos/build/3rdparty/zookeeper-3.4.8/src/c/include)
+include_directories(/home/rchatsiri/workspacecpp/mesos/build/3rdparty/zookeeper-3.4.8/src/c/generated)
 
 # ADD BINARY DEPENDENCIES (tells CMake what to compile/build first).
 ####################################################################
@@ -270,49 +168,28 @@ add_dependencies(
   ${TEST_HELPER_TARGET}
   )
 
-if (NOT WIN32)
+#if (NOT WIN32)
   # The tests require all the test modules.
   # NOTE: Modules are not supported on Windows.
-  add_dependencies(
-    ${MESOS_TESTS_TARGET}
-    #${TEST_ALLOCATOR}
-    #${TEST_ANONYMOUS}
-    #${TEST_AUTHENTICATION}
-    #${TEST_AUTHORIZER}
-    #${TEST_CONTAINER_LOGGER}
-    #${TEST_EXAMPLEMODULE}
-    #${TEST_HOOK}
-    #${TEST_HTTPAUTHENTICATOR}
-    #${TEST_ISOLATOR}
-    #${TEST_MASTER_CONTENDER}
-    #${TEST_MASTER_DETECTOR}
-    #${TEST_QOS_CONTROLLER}
-    #${TEST_RESOURCE_ESTIMATOR}
-    )
+  #  add_dependencies(
+  #    ${MESOS_TESTS_TARGET}
+  #     )
 
   # The tests require all the example frameworks and executors.
   # TODO(josephw): The scheduler driver is current not built on Windows.
-  add_dependencies(
-    ${MESOS_TESTS_TARGET}
-    #${BALLOON_EXECUTOR}
-    #${BALLOON_FRAMEWORK}
-    #${DISK_FULL_FRAMEWORK}
-    #${DOCKER_NO_EXECUTOR_FRAMEWORK}
-    #${DYNAMIC_RESERVATION_FRAMEWORK}
-    #${LOAD_GENERATOR_FRAMEWORK}
-    #${LONG_LIVED_EXECUTOR}
-    #${LONG_LIVED_FRAMEWORK}
-    #${NO_EXECUTOR_FRAMEWORK}
-    #${PERSISTENT_VOLUME_FRAMEWORK}
-    #${TEST_EXECUTOR}
-    #${TEST_FRAMEWORK}
-    #${TEST_HTTP_EXECUTOR}
-    #${TEST_HTTP_FRAMEWORK}
-    )
-endif ()
+  #  add_dependencies(
+  #    ${MESOS_TESTS_TARGET}
+  #     )
+  #endif ()
 
-add_dependencies(${TEST_HELPER_TARGET} ${MESOS_TESTS_DEPENDENCIES})
+  #add_dependencies(${TEST_HELPER_TARGET} ${MESOS_TESTS_DEPENDENCIES})
 
 # ADD TEST TARGET (runs when you do, e.g., `make check`).
 #########################################################
-add_test(NAME MesosTests COMMAND ${MESOS_TESTS_TARGET})
+
+add_executable(docker_test ${MESOS_TESTS_SRC})
+
+target_link_libraries(docker_test PRIVATE mesos pthread)
+
+
+add_test(NAME docker_test COMMAND ${MESOS_TESTS_TARGET})

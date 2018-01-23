@@ -125,7 +125,7 @@ std::string getContainerIOSwitchboardSocketPath(
 
 
 // The helper method to read the io switchboard socket file.
-Result<process::network::unix::Address> getContainerIOSwitchboardAddress(
+Result<process::network::unix_impl::Address> getContainerIOSwitchboardAddress(
     const std::string& runtimeDir,
     const ContainerID& containerId);
 #endif

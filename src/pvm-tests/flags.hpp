@@ -35,6 +35,8 @@
 
 #include "slave/constants.hpp"
 
+#define SOURCE_DIR /home/rchatsiri/workspacecpp/mesos/src/pvm-tests/
+
 namespace mesos {
 namespace internal {
 namespace tests {

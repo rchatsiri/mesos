@@ -55,7 +55,7 @@
 namespace http = process::http;
 
 #ifndef __WINDOWS__
-namespace unix = process::network::unix;
+namespace unix = process::network::unix_impl;
 #endif // __WINDOWS__
 
 namespace paths = mesos::internal::slave::containerizer::paths;
