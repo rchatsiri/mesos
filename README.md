@@ -45,11 +45,13 @@ For additional information, see the LICENSE and NOTICE files.
 
      * Slave with docker flag.
 
-       ``` sudo ./mesos-slave.sh --master=127.0.0.1:5050 \
+       ```
+       sudo ./mesos-slave.sh --master=127.0.0.1:5050 \
        --work_dir=/var/lib/mesos --containerizers=mesos,docker \
        --docker_registry=/tmp/mesos/images/docker \
        --executor_registration_timeout=5mins \
-       --isolation=filesystem/linux,docker/runtime ```
+       --isolation=filesystem/linux,docker/runtime
+       ```
 
   * Export path Mesos supports marathon.
 
@@ -67,9 +69,11 @@ For additional information, see the LICENSE and NOTICE files.
 
      * Create LXC by specific directory.
 
-          ``` sudo ./lxc-create -f /home/rchatsiri/workspacecpp/lxc-build/share/lxc/config/debian.common.conf  \
+          ```
+          sudo ./lxc-create -f /home/rchatsiri/workspacecpp/lxc-build/share/lxc/config/debian.common.conf  \
               -t /home/rchatsiri/workspacecpp/lxc-build/share/lxc/templates/lxc-debian \
-              --name debian-inst01 --dir=/home/rchatsiri/workspacecpp/lxc-build/rootfs ```
+              --name debian-inst01 --dir=/home/rchatsiri/workspacecpp/lxc-build/rootfs
+          ```
 
      * Read configuration.
 
