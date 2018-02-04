@@ -48,8 +48,17 @@ using namespace mesos;
 using namespace mesos::internal::slave;
 using namespace process;
 
-/*
+using std::list;
+using std::map;
+using std::string;
+using std::vector;
+
 Try<Owned<Lxc>> Lxc::create(
+  const string& path,
+  const string& socket,
+  bool validate,
   const Option<JSON::Object>& config)
 {
-}*/
+  Owned<Lxc> lxc(new Lxc(path, socket, config));
+  return lxc;
+}

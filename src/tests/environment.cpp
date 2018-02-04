@@ -662,6 +662,22 @@ private:
   bool unzipError;
 };
 
+class LxcFilter : public TestFilter
+{
+public:
+  LxcFilter()
+  {
+  }
+
+  bool disable(const ::testing::TestInfo* test) const
+  {
+    return matches(test, "LXC_") && false;
+  }
+
+private:
+  Option<Error> error;
+};
+
 
 Environment::Environment(const Flags& _flags)
   : stout::internal::tests::Environment(
@@ -683,7 +699,8 @@ Environment::Environment(const Flags& _flags)
             std::make_shared<PerfFilter>(),
             std::make_shared<RootFilter>(),
             std::make_shared<UnzipFilter>(),
-            std::make_shared<XfsFilter>()}),
+            std::make_shared<XfsFilter>(),
+            std::make_shared<LxcFilter>()}),
     flags(_flags)
 {
   // Add our test event listeners.

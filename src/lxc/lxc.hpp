@@ -39,14 +39,28 @@ class Lxc
 {
 public:
   // Create lxc service.
-  Try<process::Owned<Lxc>> create(
+  static Try<process::Owned<Lxc>> create(
+     const std::string& path,
+     const std::string& socket,
+     bool validate = true,
      const Option<JSON::Object>& config = None());
 
   virtual ~Lxc() {}
+protected:
+  Lxc(const std::string& _path,
+      const std::string& _socket,
+      const Option<JSON::Object>& _config)
+    : path(_path),
+      socket(_socket),
+      config(_config) {}
 private:
   static process::Future<Version> _version(
      const std::string& cmd,
      const process::Subprocess& s);
+
+  const std::string path;
+  const std::string socket;
+  const Option<JSON::Object> config;
 };
 
 #endif /* __LXC_HPP__ */

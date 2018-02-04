@@ -177,6 +177,9 @@ public:
   Option<std::string> modulesDir;
   Option<std::string> isolation;
   std::string authenticators;
+  // lxc
+  std::string lxc;
+  std::string lxc_socket;
 };
 
 // Global flags for running the tests.

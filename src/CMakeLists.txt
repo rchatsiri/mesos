@@ -52,6 +52,8 @@ PROTOC_TO_INCLUDE_DIR(V1_MESOS              mesos/v1/mesos)
 PROTOC_TO_INCLUDE_DIR(V1_QUOTA              mesos/v1/quota/quota)
 PROTOC_TO_INCLUDE_DIR(V1_RESOURCE_PROVIDER  mesos/v1/resource_provider/resource_provider)
 PROTOC_TO_INCLUDE_DIR(V1_SCHEDULER          mesos/v1/scheduler/scheduler)
+PROTOC_TO_INCLUDE_DIR(LXC_SPEC              mesos/lxc/spec)
+PROTOC_TO_INCLUDE_DIR(LXC_V2                mesos/lxc/v2)
 
 PROTOC_TO_SRC_DIR(INTERNAL_FLAGS                messages/flags)
 PROTOC_TO_SRC_DIR(INTERNAL_LOG                  messages/log)
@@ -96,6 +98,8 @@ set(PUBLIC_PROTOBUF_SRC
   ${V1_QUOTA_PROTO_CC}
   ${V1_RESOURCE_PROVIDER_PROTO_CC}
   ${V1_SCHEDULER_PROTO_CC}
+  ${LXC_SPEC_PROTO_CC}
+  ${LXC_V1_PROTO_CC}
   )
 
 set(INTERNAL_PROTOBUF_SRC

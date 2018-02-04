@@ -2110,20 +2110,20 @@ PHONY_TARGETS += clean-python
 #test_http_framework_CPPFLAGS = $(MESOS_CPPFLAGS)
 #test_http_framework_LDADD = libmesos.la $(LDADD)
 
-#check_PROGRAMS += test-framework
-#test_framework_SOURCES = examples/test_framework.cpp
-#test_framework_CPPFLAGS = $(MESOS_CPPFLAGS)
-#test_framework_LDADD = libmesos.la $(LDADD)
+check_PROGRAMS += test-framework
+test_framework_SOURCES = examples/test_framework.cpp
+test_framework_CPPFLAGS = $(MESOS_CPPFLAGS)
+test_framework_LDADD = libmesos.la $(LDADD)
 
 check_PROGRAMS += test-executor
 test_executor_SOURCES = examples/test_executor.cpp
 test_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
 test_executor_LDADD = libmesos.la $(LDADD)
 
-#check_PROGRAMS += test-http-executor
-#test_http_executor_SOURCES = examples/test_http_executor.cpp
-#test_http_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
-#test_http_executor_LDADD = libmesos.la $(LDADD)
+check_PROGRAMS += test-http-executor
+test_http_executor_SOURCES = examples/test_http_executor.cpp
+test_http_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
+test_http_executor_LDADD = libmesos.la $(LDADD)
 
 #check_PROGRAMS += long-lived-framework
 #long_lived_framework_SOURCES = examples/long_lived_framework.cpp
@@ -2227,13 +2227,17 @@ MESOS_TEST_MODULE_LDFLAGS += -rpath /nowhere
 endif
 
 MESOS_TEST_MODULES =		\
+  libexamplemodule.la           \
+  libtestallocator.la           \
   libtestisolator.la		\
-  libtestresource_estimator.la
+  libtestresource_estimator.la  \
+  libtestcontainer_logger.la    \
+  libtestauthentication.la
 
 # Library containing an example module.
-#libexamplemodule_la_SOURCES = examples/example_module_impl.cpp
-#libexamplemodule_la_CPPFLAGS = $(MESOS_CPPFLAGS)
-#libexamplemodule_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
+libexamplemodule_la_SOURCES = examples/example_module_impl.cpp
+libexamplemodule_la_CPPFLAGS = $(MESOS_CPPFLAGS)
+libexamplemodule_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
 
 # Library containing the test anonymous modules.
 #libtestanonymous_la_SOURCES = examples/test_anonymous_module.cpp
@@ -2243,12 +2247,12 @@ MESOS_TEST_MODULES =		\
 # Library containing the test CRAM-MD5 authentication modules.
 # TODO(tillt): Add cyrus-sasl2 dependency while removing it from libmesos.
 # TODO(tillt): Enable optional building of this module library.
-#libtestauthentication_la_SOURCES = examples/test_authentication_modules.cpp
-#libtestauthentication_la_CPPFLAGS = $(MESOS_CPPFLAGS)
-#libtestauthentication_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
+libtestauthentication_la_SOURCES = examples/test_authentication_modules.cpp
+libtestauthentication_la_CPPFLAGS = $(MESOS_CPPFLAGS)
+libtestauthentication_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
 
 # Library containing the test authorizer module.
-#libtestauthorizer_la_SOURCES = examples/test_authorizer_module.cpp
+libtestauthorizer_la_SOURCES = examples/test_authorizer_module.cpp
 libtestauthorizer_la_CPPFLAGS = $(MESOS_CPPFLAGS)
 libtestauthorizer_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
 
@@ -2258,15 +2262,15 @@ libtestauthorizer_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
 #libtesthttpauthenticator_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
 
 # Library containing the test DRF allocator module.
-#libtestallocator_la_SOURCES = examples/test_allocator_module.cpp
-#libtestallocator_la_CPPFLAGS = $(MESOS_CPPFLAGS)
-#libtestallocator_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
+libtestallocator_la_SOURCES = examples/test_allocator_module.cpp
+libtestallocator_la_CPPFLAGS = $(MESOS_CPPFLAGS)
+libtestallocator_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
 
 # Library containing example test sandbox container logger module.
-#libtestcontainer_logger_la_SOURCES =		\
-#  examples/test_container_logger_module.cpp
-#libtestcontainer_logger_la_CPPFLAGS = $(MESOS_CPPFLAGS)
-#libtestcontainer_logger_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
+libtestcontainer_logger_la_SOURCES =		\
+  examples/test_container_logger_module.cpp
+libtestcontainer_logger_la_CPPFLAGS = $(MESOS_CPPFLAGS)
+libtestcontainer_logger_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
 
 # Library containing the test contender module.
 #libtestmastercontender_la_SOURCES = examples/test_master_contender_module.cpp
@@ -2307,101 +2311,22 @@ noinst_LTLIBRARIES += $(MESOS_TEST_MODULES)
 endif
 
 mesos_tests_SOURCES =						\
-  slave/qos_controllers/load.cpp				\
-  tests/active_user_test_helper.cpp				\
-  tests/anonymous_tests.cpp					\
-  tests/api_tests.cpp						\
-  tests/attributes_tests.cpp					\
-  tests/authentication_tests.cpp				\
-  tests/authorization_tests.cpp					\
-  tests/check_tests.cpp						\
-  tests/cluster.cpp						\
-  tests/command_executor_tests.cpp				\
-  tests/container_logger_tests.cpp				\
-  tests/containerizer.cpp					\
-  tests/cram_md5_authentication_tests.cpp			\
-  tests/credentials_tests.cpp					\
-  tests/default_executor_tests.cpp				\
-  tests/disk_quota_tests.cpp					\
-  tests/dynamic_weights_tests.cpp				\
+  tests/resources_utils.cpp                                     \
+  tests/script.cpp                                              \
+  tests/mock_fetcher.cpp                                        \
+  tests/module.cpp                                              \
+  tests/module_tests.cpp                                        \
+  tests/utils.cpp                                               \
+  tests/mock_registrar.cpp                                      \
+  tests/mock_slave.cpp                                          \
+  tests/mock_docker.cpp                                         \
+  tests/cluster.cpp                                             \
   tests/environment.cpp						\
-  tests/examples_tests.cpp					\
-  tests/exception_tests.cpp					\
-  tests/executor_http_api_tests.cpp				\
-  tests/fault_tolerance_tests.cpp				\
-  tests/fetcher_cache_tests.cpp					\
-  tests/fetcher_tests.cpp					\
-  tests/files_tests.cpp						\
-  tests/flags.cpp						\
-  tests/gc_tests.cpp						\
-  tests/hdfs_tests.cpp						\
-  tests/health_check_tests.cpp					\
-  tests/hierarchical_allocator_tests.cpp			\
-  tests/hook_tests.cpp						\
-  tests/http_authentication_tests.cpp				\
-  tests/http_fault_tolerance_tests.cpp				\
-  tests/http_server_test_helper.cpp				\
-  tests/kill_policy_test_helper.cpp				\
+  tests/flags.cpp                                               \
   tests/log_tests.cpp						\
   tests/logging_tests.cpp					\
   tests/main.cpp						\
-  tests/master_allocator_tests.cpp				\
-  tests/master_authorization_tests.cpp				\
-  tests/master_contender_detector_tests.cpp			\
-  tests/master_maintenance_tests.cpp				\
-  tests/master_quota_tests.cpp					\
-  tests/master_slave_reconciliation_tests.cpp			\
-  tests/master_tests.cpp					\
-  tests/master_validation_tests.cpp				\
   tests/mesos.cpp						\
-  tests/metrics_tests.cpp					\
-  tests/mock_docker.cpp						\
-  tests/mock_fetcher.cpp					\
-  tests/mock_slave.cpp						\
-  tests/mock_registrar.cpp					\
-  tests/module.cpp						\
-  tests/module_tests.cpp					\
-  tests/oversubscription_tests.cpp				\
-  tests/partition_tests.cpp					\
-  tests/paths_tests.cpp						\
-  tests/persistent_volume_endpoints_tests.cpp			\
-  tests/persistent_volume_tests.cpp				\
-  tests/protobuf_io_tests.cpp					\
-  tests/protobuf_utils_tests.cpp				\
-  tests/rate_limiting_tests.cpp					\
-  tests/reconciliation_tests.cpp				\
-  tests/registrar_tests.cpp					\
-  tests/reservation_endpoints_tests.cpp				\
-  tests/reservation_tests.cpp					\
-  tests/resource_offers_tests.cpp				\
-  tests/resource_provider_http_api_tests.cpp			\
-  tests/resource_provider_validation_tests.cpp			\
-  tests/resources_tests.cpp					\
-  tests/resources_utils.cpp					\
-  tests/role_tests.cpp						\
-  tests/scheduler_driver_tests.cpp				\
-  tests/scheduler_event_call_tests.cpp				\
-  tests/scheduler_http_api_tests.cpp				\
-  tests/scheduler_tests.cpp					\
-  tests/script.cpp						\
-  tests/slave_authorization_tests.cpp				\
-  tests/slave_recovery_tests.cpp				\
-  tests/slave_validation_tests.cpp				\
-  tests/slave_tests.cpp						\
-  tests/sorter_tests.cpp					\
-  tests/state_tests.cpp						\
-  tests/status_update_manager_tests.cpp				\
-  tests/teardown_tests.cpp					\
-  tests/upgrade_tests.cpp					\
-  tests/uri_tests.cpp						\
-  tests/uri_fetcher_tests.cpp					\
-  tests/utils.cpp						\
-  tests/values_tests.cpp					\
-  tests/zookeeper_url_tests.cpp					\
-  tests/common/command_utils_tests.cpp				\
-  tests/common/http_tests.cpp					\
-  tests/common/recordio_tests.cpp				\
-  tests/common/type_utils_tests.cpp				\
   tests/containerizer/appc_spec_tests.cpp			\
   tests/containerizer/composing_containerizer_tests.cpp		\
   tests/containerizer/containerizer_tests.cpp			\
@@ -2628,6 +2553,6 @@ endif
 
 clean-local: clean-java clean-python
 
-tests: all $(check_PROGRAMS) mesos-tests
+tests: all  mesos-tests
 
 .PHONY: $(PHONY_TARGETS)

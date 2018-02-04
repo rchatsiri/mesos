@@ -279,8 +279,7 @@ V1_MESOS_PROTO = $(top_srcdir)/include/mesos/v1/mesos.proto
 V1_QUOTA_PROTO = $(top_srcdir)/include/mesos/v1/quota/quota.proto
 V1_RESOURCE_PROVIDER_PROTO = $(top_srcdir)/include/mesos/v1/resource_provider/resource_provider.proto
 V1_SCHEDULER_PROTO = $(top_srcdir)/include/mesos/v1/scheduler/scheduler.proto
-LXC_SPEC_PROTO = $(top_srcdir)/include/mesos/lxc/spec.proto
-LXC_V2_PROTO = $(top_srcdir)/include/mesos/lxc/v2.proto
+
 
 CXX_PROTOS =								\
   ../include/mesos/mesos.pb.cc						\
@@ -348,11 +347,7 @@ CXX_PROTOS =								\
   ../include/mesos/v1/resource_provider/resource_provider.pb.cc		\
   ../include/mesos/v1/resource_provider/resource_provider.pb.h		\
   ../include/mesos/v1/scheduler/scheduler.pb.cc				\
-  ../include/mesos/v1/scheduler/scheduler.pb.h                          \
-  ../include/mesos/lxc/spec.pb.cc                                       \
-  ../include/mesos/lxc/spec.pb.h                                        \
-  ../include/mesos/lxc/v2.pb.cc                                         \
-  ../include/mesos/lxc/v2.pb.h
+  ../include/mesos/v1/scheduler/scheduler.pb.h
 
 CXX_PROTOS +=								\
   master/registry.pb.cc							\
@@ -367,7 +362,6 @@ CXX_PROTOS +=								\
   slave/containerizer/mesos/isolators/docker/volume/state.pb.h		\
   slave/containerizer/mesos/isolators/network/cni/spec.pb.cc		\
   slave/containerizer/mesos/isolators/network/cni/spec.pb.h
-
 
 CXX_LOG_PROTOS =							\
   messages/log.pb.cc							\
@@ -643,17 +637,6 @@ nodist_docker_HEADERS =							\
 
 
 lxcdir = $(pkgincludedir)/lxc
-
-lxc_HEADERS =                                                           \
-  $(top_srcdir)/include/mesos/lxc/spec.hpp                              \
-  $(top_srcdir)/include/mesos/lxc/spec.proto                            \
-  $(top_srcdir)/include/mesos/lxc/v2.hpp                                \
-  $(top_srcdir)/include/mesos/lxc/v2.proto
-
-nodist_lxc_HEADERS =							\
-  ../include/mesos/lxc/spec.pb.h					\
-  ../include/mesos/lxc/v2.pb.h
-
 
 executordir = $(pkgincludedir)/executor
 
@@ -1534,9 +1517,7 @@ libmesos_la_SOURCES =							\
   $(V1_MESOS_PROTO)							\
   $(V1_QUOTA_PROTO)							\
   $(V1_RESOURCE_PROVIDER_PROTO)						\
-  $(V1_SCHEDULER_PROTO)                                                 \
-  $(LXC_SPECT_PROTO)                                                    \
-  $(LXC_V2_PROTO)
+  $(V1_SCHEDULER_PROTO)
 
 libmesos_la_LDFLAGS = -release $(PACKAGE_VERSION)
 
@@ -1765,103 +1746,101 @@ EXTRA_DIST +=								\
 # to EXTRA_DIST unconditionally.
 
 # Mesos JAR.
-MESOS_JAR = java/target/mesos-$(PACKAGE_VERSION).jar
-MESOS_JAR_SOURCE =							\
-  $(srcdir)/java/src/org/apache/mesos/ExecutorDriver.java		\
-  $(srcdir)/java/src/org/apache/mesos/Executor.java			\
-  $(srcdir)/java/src/org/apache/mesos/Log.java				\
-  $(srcdir)/java/src/org/apache/mesos/MesosExecutorDriver.java		\
-  $(srcdir)/java/src/org/apache/mesos/MesosSchedulerDriver.java		\
-  $(srcdir)/java/src/org/apache/mesos/SchedulerDriver.java		\
-  $(srcdir)/java/src/org/apache/mesos/Scheduler.java			\
-  $(srcdir)/java/src/org/apache/mesos/state/AbstractState.java		\
-  $(srcdir)/java/src/org/apache/mesos/state/InMemoryState.java		\
-  $(srcdir)/java/src/org/apache/mesos/state/LevelDBState.java		\
-  $(srcdir)/java/src/org/apache/mesos/state/LogState.java		\
-  $(srcdir)/java/src/org/apache/mesos/state/State.java			\
-  $(srcdir)/java/src/org/apache/mesos/state/Variable.java		\
-  $(srcdir)/java/src/org/apache/mesos/state/ZooKeeperState.java		\
-  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/V1Mesos.java		\
-  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/Mesos.java		\
-  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/Scheduler.java	\
-  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/V0Mesos.java
-
-MESOS_JAR_GENERATED = $(JAVA_PROTOS) $(V1_JAVA_PROTOS)			\
-  java/generated/org/apache/mesos/MesosNativeLibrary.java
-
-EXTRA_DIST += $(MESOS_JAR_SOURCE)					\
-  $(srcdir)/java/generated/org/apache/mesos/MesosNativeLibrary.java.in
+#MESOS_JAR = java/target/mesos-$(PACKAGE_VERSION).jar
+#MESOS_JAR_SOURCE =							\
+#  $(srcdir)/java/src/org/apache/mesos/ExecutorDriver.java		\
+#  $(srcdir)/java/src/org/apache/mesos/Executor.java			\
+#  $(srcdir)/java/src/org/apache/mesos/Log.java				\
+#  $(srcdir)/java/src/org/apache/mesos/MesosExecutorDriver.java		\
+#  $(srcdir)/java/src/org/apache/mesos/MesosSchedulerDriver.java		\
+#  $(srcdir)/java/src/org/apache/mesos/SchedulerDriver.java		\
+#  $(srcdir)/java/src/org/apache/mesos/Scheduler.java			\
+#  $(srcdir)/java/src/org/apache/mesos/state/AbstractState.java		\
+#  $(srcdir)/java/src/org/apache/mesos/state/InMemoryState.java		\
+#  $(srcdir)/java/src/org/apache/mesos/state/LevelDBState.java		\
+#  $(srcdir)/java/src/org/apache/mesos/state/LogState.java		\
+#  $(srcdir)/java/src/org/apache/mesos/state/State.java			\
+#  $(srcdir)/java/src/org/apache/mesos/state/Variable.java		\
+#  $(srcdir)/java/src/org/apache/mesos/state/ZooKeeperState.java		\
+#  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/V1Mesos.java		\
+#  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/Mesos.java		\
+#  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/Scheduler.java	\
+#  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/V0Mesos.java
+#MESOS_JAR_GENERATED = $(JAVA_PROTOS) $(V1_JAVA_PROTOS)			\
+#  java/generated/org/apache/mesos/MesosNativeLibrary.java
+#EXTRA_DIST += $(MESOS_JAR_SOURCE)					\
+#  $(srcdir)/java/generated/org/apache/mesos/MesosNativeLibrary.java.in
 
 # We build all the Java examples into their own JAR.
-EXAMPLES_JAR = examples.jar
-EXAMPLES_SOURCE =							\
-  $(srcdir)/examples/java/TestExceptionFramework.java			\
-  $(srcdir)/examples/java/TestExecutor.java				\
-  $(srcdir)/examples/java/TestFramework.java				\
-  $(srcdir)/examples/java/TestLog.java					\
-  $(srcdir)/examples/java/TestMultipleExecutorsFramework.java		\
-  $(srcdir)/examples/java/V1TestFramework.java
-EXTRA_DIST += $(EXAMPLES_SOURCE)
+#EXAMPLES_JAR = examples.jar
+#EXAMPLES_SOURCE =							\
+#  $(srcdir)/examples/java/TestExceptionFramework.java			\
+#  $(srcdir)/examples/java/TestExecutor.java				\
+#  $(srcdir)/examples/java/TestFramework.java				\
+#  $(srcdir)/examples/java/TestLog.java					\
+#  $(srcdir)/examples/java/TestMultipleExecutorsFramework.java		\
+#  $(srcdir)/examples/java/V1TestFramework.java
+#EXTRA_DIST += $(EXAMPLES_SOURCE)
 
 
-if HAS_JAVA
+#if HAS_JAVA
 
-$(MESOS_JAR): $(MESOS_JAR_SOURCE) $(MESOS_JAR_GENERATED) java/mesos.pom
-	@echo "Building mesos-$(PACKAGE_VERSION).jar ..."
-	@cd $(abs_top_builddir)/src/java && $(MVN) -B -f mesos.pom clean package
+#$(MESOS_JAR): $(MESOS_JAR_SOURCE) $(MESOS_JAR_GENERATED) java/mesos.pom
+#	@echo "Building mesos-$(PACKAGE_VERSION).jar ..."
+#	@cd $(abs_top_builddir)/src/java && $(MVN) -B -f mesos.pom clean package
 
 # Convenience library for JNI bindings.
 # TODO(Charles Reiss): We really should be building the Java library
 # with -module, which means it should be a different library than the
 # main libmesos.so.
-noinst_LTLIBRARIES += libjava.la
-#
-libjava_la_SOURCES =							\
-  java/jni/convert.cpp							\
-  java/jni/convert.hpp							\
-  java/jni/construct.cpp						\
-  java/jni/construct.hpp						\
-  java/jni/org_apache_mesos_Log.cpp					\
-  java/jni/org_apache_mesos_MesosExecutorDriver.cpp			\
-  java/jni/org_apache_mesos_MesosNativeLibrary.cpp			\
-  java/jni/org_apache_mesos_MesosSchedulerDriver.cpp			\
-  java/jni/org_apache_mesos_state_AbstractState.cpp			\
-  java/jni/org_apache_mesos_state_LevelDBState.cpp			\
-  java/jni/org_apache_mesos_state_LogState.cpp				\
-  java/jni/org_apache_mesos_state_Variable.cpp				\
-  java/jni/org_apache_mesos_state_ZooKeeperState.cpp			\
-  java/jni/org_apache_mesos_v1_scheduler_V1Mesos.cpp			\
-  java/jni/org_apache_mesos_v1_scheduler_V0Mesos.cpp			\
-  jvm/jvm.cpp								\
-  jvm/jvm.hpp								\
-  jvm/java/io.hpp							\
-  jvm/java/lang.hpp							\
-  jvm/java/net.hpp							\
-  jvm/org/apache/log4j.cpp						\
-  jvm/org/apache/log4j.hpp						\
-  jvm/org/apache/zookeeper.cpp						\
-  jvm/org/apache/zookeeper.hpp
+#noinst_LTLIBRARIES += libjava.la
 
-libjava_la_CPPFLAGS = $(MESOS_CPPFLAGS)
-libjava_la_CPPFLAGS += $(JAVA_CPPFLAGS)
-libjava_la_CPPFLAGS += -I$(srcdir)/java/jni -Ijava/jni
+#libjava_la_SOURCES =							\
+#  java/jni/convert.cpp							\
+#  java/jni/convert.hpp							\
+#  java/jni/construct.cpp						\
+#  java/jni/construct.hpp						\
+#  java/jni/org_apache_mesos_Log.cpp					\
+#  java/jni/org_apache_mesos_MesosExecutorDriver.cpp			\
+#  java/jni/org_apache_mesos_MesosNativeLibrary.cpp			\
+#  java/jni/org_apache_mesos_MesosSchedulerDriver.cpp			\
+#  java/jni/org_apache_mesos_state_AbstractState.cpp			\
+#  java/jni/org_apache_mesos_state_LevelDBState.cpp			\
+#  java/jni/org_apache_mesos_state_LogState.cpp				\
+#  java/jni/org_apache_mesos_state_Variable.cpp				\
+#  java/jni/org_apache_mesos_state_ZooKeeperState.cpp			\
+#  java/jni/org_apache_mesos_v1_scheduler_V1Mesos.cpp			\
+#  java/jni/org_apache_mesos_v1_scheduler_V0Mesos.cpp			\
+#  jvm/jvm.cpp								\
+#  jvm/jvm.hpp								\
+#  jvm/java/io.hpp							\
+#  jvm/java/lang.hpp							\
+#  jvm/java/net.hpp							\
+#  jvm/org/apache/log4j.cpp						\
+#  jvm/org/apache/log4j.hpp						\
+#  jvm/org/apache/zookeeper.cpp						\
+#  jvm/org/apache/zookeeper.hpp
 
-libjava_la_DEPENDENCIES =						\
-  $(MESOS_PROTO)							\
-  $(V1_AGENT_PROTO)							\
-  $(V1_ALLOCATOR_PROTO)							\
-  $(V1_EXECUTOR_PROTO)							\
-  $(V1_MAINTENANCE_PROTO)						\
-  $(V1_MASTER_PROTO)							\
-  $(V1_MESOS_PROTO)							\
-  $(V1_QUOTA_PROTO)							\
-  $(V1_RESOURCE_PROVIDER_PROTO)						\
-  $(V1_SCHEDULER_PROTO)
+#libjava_la_CPPFLAGS = $(MESOS_CPPFLAGS)
+#libjava_la_CPPFLAGS += $(JAVA_CPPFLAGS)
+#libjava_la_CPPFLAGS += -I$(srcdir)/java/jni -Ijava/jni
+
+#libjava_la_DEPENDENCIES =						\
+#  $(MESOS_PROTO)							\
+#  $(V1_AGENT_PROTO)							\
+#  $(V1_ALLOCATOR_PROTO)							\
+#  $(V1_EXECUTOR_PROTO)							\
+#  $(V1_MAINTENANCE_PROTO)						\
+#  $(V1_MASTER_PROTO)							\
+#  $(V1_MESOS_PROTO)							\
+#  $(V1_QUOTA_PROTO)							\
+#  $(V1_RESOURCE_PROVIDER_PROTO)						\
+#  $(V1_SCHEDULER_PROTO)
 
 # We don't add libjava.la to libmesos_no_3rdparty.la so we don't
 # include the JNI bindings in the Python egg (but we might want to
 # reconsider this in the future).
-libmesos_la_LIBADD += libjava.la
+#libmesos_la_LIBADD += libjava.la
 
 # We need to generate the JNI header files before we build the sources
 # and the easiest way to do that with autotools is with the
@@ -1870,19 +1849,19 @@ libmesos_la_LIBADD += libjava.la
 # that should not matter as libjava.la is just a convenience library
 # and should not get exposed.
 
-nodist_libjava_la_SOURCES =						\
-  java/jni/org_apache_mesos_Log.h					\
-  java/jni/org_apache_mesos_MesosExecutorDriver.h			\
-  java/jni/org_apache_mesos_MesosSchedulerDriver.h			\
-  java/jni/org_apache_mesos_state_AbstractState.h			\
-  java/jni/org_apache_mesos_state_LevelDBState.h			\
-  java/jni/org_apache_mesos_state_LogState.h				\
-  java/jni/org_apache_mesos_state_Variable.h				\
-  java/jni/org_apache_mesos_state_ZooKeeperState.h			\
-  java/jni/org_apache_mesos_v1_scheduler_V1Mesos.h			\
-  java/jni/org_apache_mesos_v1_scheduler_V0Mesos.h
+#nodist_libjava_la_SOURCES =						\
+#  java/jni/org_apache_mesos_Log.h					\
+#  java/jni/org_apache_mesos_MesosExecutorDriver.h			\
+#  java/jni/org_apache_mesos_MesosSchedulerDriver.h			\
+#  java/jni/org_apache_mesos_state_AbstractState.h			\
+#  java/jni/org_apache_mesos_state_LevelDBState.h			\
+#  java/jni/org_apache_mesos_state_LogState.h				\
+#  java/jni/org_apache_mesos_state_Variable.h				\
+#  java/jni/org_apache_mesos_state_ZooKeeperState.h			\
+#  java/jni/org_apache_mesos_v1_scheduler_V1Mesos.h			\
+#  java/jni/org_apache_mesos_v1_scheduler_V0Mesos.h
 
-BUILT_SOURCES += $(nodist_libjava_la_SOURCES)
+#BUILT_SOURCES += $(nodist_libjava_la_SOURCES)
 
 java/jni/org_apache_mesos_MesosSchedulerDriver.h: $(MESOS_JAR)
 	$(JAVA_HOME)/bin/javah -d java/jni				\
@@ -1943,13 +1922,13 @@ $(EXAMPLES_JAR): $(EXAMPLES_SOURCE)
           $(srcdir)/examples/java/*.java
 	$(JAVA_HOME)/bin/jar cf $@ -C examples/java .
 
-CLEANFILES += $(EXAMPLES_JAR)
+#CLEANFILES += $(EXAMPLES_JAR)
 
-maven-install: $(MESOS_JAR) java/mesos.pom
-	$(MVN) -B -f java/mesos.pom install
+#maven-install: $(MESOS_JAR) java/mesos.pom
+#	$(MVN) -B -f java/mesos.pom install
 
-PHONY_TARGETS += maven-install
-endif # HAS_JAVA
+#PHONY_TARGETS += maven-install
+#endif # HAS_JAVA
 
 clean-java:
 	-rm -rf java/target
@@ -2331,46 +2310,26 @@ else
 noinst_LTLIBRARIES += $(MESOS_TEST_MODULES)
 endif
 
-#mesos_tests_SOURCES =						\
-#  tests/resources_utils.cpp                                     \
-#  tests/containerizer.cpp                                       \
-#  tests/script.cpp                                              \
-#  tests/mock_fetcher.cpp                                        \
-#  tests/module.cpp                                              \
-#  tests/utils.cpp                                               \
-#  tests/mock_registrar.cpp                                      \
-#  tests/mock_slave.cpp                                          \
-#  tests/mock_docker.cpp                                         \
-#  tests/cluster.cpp                                             \
-#  tests/environment.cpp						\
-#  tests/flags.cpp                                               \
-#  tests/main.cpp						\
-#  tests/mesos.cpp						\
-#  tests/containerizer/appc_spec_tests.cpp			\
-#  tests/containerizer/composing_containerizer_tests.cpp		\
-#  tests/containerizer/containerizer_tests.cpp			\
-#  tests/containerizer/memory_isolator_tests.cpp		        \
-#  tests/containerizer/memory_test_helper.cpp			\
-#  tests/paravirtualizer/lxc_tests.cpp
-
-
 mesos_tests_SOURCES =						\
   tests/resources_utils.cpp                                     \
   tests/containerizer.cpp                                       \
   tests/script.cpp                                              \
   tests/mock_fetcher.cpp                                        \
   tests/module.cpp                                              \
+  tests/module_tests.cpp                                        \
   tests/utils.cpp                                               \
   tests/mock_registrar.cpp                                      \
   tests/mock_slave.cpp                                          \
   tests/mock_docker.cpp                                         \
   tests/cluster.cpp                                             \
-  tests/environment.cpp					 \
+  tests/environment.cpp						\
   tests/flags.cpp                                               \
+  tests/log_tests.cpp						\
+  tests/logging_tests.cpp					\
   tests/main.cpp						\
   tests/mesos.cpp						\
   tests/containerizer/appc_spec_tests.cpp			\
-  tests/containerizer/composing_containerizer_tests.cpp	\
+  tests/containerizer/composing_containerizer_tests.cpp		\
   tests/containerizer/containerizer_tests.cpp			\
   tests/containerizer/cpu_isolator_tests.cpp			\
   tests/containerizer/docker_containerizer_tests.cpp		\
@@ -2380,7 +2339,7 @@ mesos_tests_SOURCES =						\
   tests/containerizer/io_switchboard_tests.cpp			\
   tests/containerizer/isolator_tests.cpp			\
   tests/containerizer/launcher.cpp				\
-  tests/containerizer/memory_isolator_tests.cpp		\
+  tests/containerizer/memory_isolator_tests.cpp			\
   tests/containerizer/memory_test_helper.cpp			\
   tests/containerizer/mesos_containerizer_tests.cpp		\
   tests/containerizer/mesos_containerizer_paths_tests.cpp	\
@@ -2433,6 +2392,7 @@ mesos_tests_SOURCES +=						\
   tests/containerizer/cni_isolator_tests.cpp			\
   tests/containerizer/docker_volume_isolator_tests.cpp		\
   tests/containerizer/linux_filesystem_isolator_tests.cpp	\
+  tests/containerizer/fs_tests.cpp				\
   tests/containerizer/memory_pressure_tests.cpp			\
   tests/containerizer/nested_mesos_containerizer_tests.cpp	\
   tests/containerizer/ns_tests.cpp				\
@@ -2443,9 +2403,7 @@ mesos_tests_SOURCES +=						\
   tests/containerizer/sched_tests.cpp				\
   tests/containerizer/setns_test_helper.cpp			\
   tests/containerizer/volume_image_isolator_tests.cpp		\
-  tests/containerizer/volume_secret_isolator_tests.cpp          \
-  tests/paravirtualizer/lxc_tests.cpp
-
+  tests/containerizer/volume_secret_isolator_tests.cpp
 endif
 
 if ENABLE_PORT_MAPPING_ISOLATOR
@@ -2454,35 +2412,35 @@ mesos_tests_SOURCES +=						\
   tests/containerizer/routing_tests.cpp
 endif
 
-#if ENABLE_SSL
-#mesos_tests_SOURCES +=						\
-#  tests/secret_generator_tests.cpp
-#endif
-
-if HAS_JAVA
+if ENABLE_SSL
 mesos_tests_SOURCES +=						\
-  tests/group_tests.cpp						\
-  tests/registrar_zookeeper_tests.cpp				\
-  tests/zookeeper.cpp						\
-  tests/zookeeper_test_server.cpp				\
-  tests/zookeeper_tests.cpp
-
-mesos_tests_CPPFLAGS += $(JAVA_CPPFLAGS)
-mesos_tests_CPPFLAGS += -DZOOKEEPER_VERSION=\"$(ZOOKEEPER_VERSION)\"
-mesos_tests_LDFLAGS = $(AM_LDFLAGS)
-mesos_tests_DEPENDENCIES += $(EXAMPLES_JAR)
-#
-EXAMPLESCRIPTSJAVA =						\
-  examples/java/test-executor					\
-  examples/java/test-exception-framework			\
-  examples/java/test-framework					\
-  examples/java/test-log					\
-  examples/java/test-multiple-executors-framework		\
-  examples/java/v1-test-framework
-
-check_SCRIPTS += $(EXAMPLESCRIPTSJAVA)
-mesos_tests_DEPENDENCIES += $(EXAMPLESCRIPTSJAVA)
+  tests/secret_generator_tests.cpp
 endif
+
+#if HAS_JAVA
+#mesos_tests_SOURCES +=						\
+#  tests/group_tests.cpp						\
+#  tests/registrar_zookeeper_tests.cpp				\
+#  tests/zookeeper.cpp						\
+#  tests/zookeeper_test_server.cpp				\
+#  tests/zookeeper_tests.cpp
+
+#mesos_tests_CPPFLAGS += $(JAVA_CPPFLAGS)
+#mesos_tests_CPPFLAGS += -DZOOKEEPER_VERSION=\"$(ZOOKEEPER_VERSION)\"
+#mesos_tests_LDFLAGS = $(AM_LDFLAGS)
+#mesos_tests_DEPENDENCIES += $(EXAMPLES_JAR)
+#
+#EXAMPLESCRIPTSJAVA =						\
+#  examples/java/test-executor					\
+#  examples/java/test-exception-framework			\
+#  examples/java/test-framework					\
+#  examples/java/test-log					\
+#  examples/java/test-multiple-executors-framework		\
+#  examples/java/v1-test-framework
+
+#check_SCRIPTS += $(EXAMPLESCRIPTSJAVA)
+#mesos_tests_DEPENDENCIES += $(EXAMPLESCRIPTSJAVA)
+#endif
 
 if HAS_PYTHON
 mesos_tests_DEPENDENCIES += $(MESOS_EGG)
